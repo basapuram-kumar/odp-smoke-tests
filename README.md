@@ -39,6 +39,7 @@ Only if you want to override Hive-related settings. See `configs/hive.env.exampl
 | `hbase-sample-smoke.sh` | `hbase-<cluster>` + HBase headless keytab | RegionServer / client |
 | `kafka-sample-smoke.sh` | `kafka/<FQDN>` + Kafka service keytab | Broker / client (Kafka 2 path) |
 | `kafka3-sample-smoke.sh` | Same keytab / principal | **Kafka 3** (`kafka3-broker`), multi-topic |
+| `schema-registry-sample-smoke.sh` | **kafka** + **registry** service keytabs | Registry host + Kafka broker |
 | `spark-sample-smoke.sh` | `spark/<FQDN>` + Spark service keytab | Spark gateway / HS host |
 | `spark2-pi-sample-smoke.sh` | Same Spark service principal/keytab | Spark 2 client + YARN |
 | `spark-3.3.3-pi-sample-smoke.sh` | Same | Spark **3.3.3** (`spark3_3_3_3-client`) + YARN |
@@ -158,6 +159,24 @@ sudo ./kafka3-sample-smoke.sh
 ```
 
 **Env:** `KAFKA_HOME`, `KAFKA_JAAS_CONF`, `KAFKA_CLIENT_CONFIG`, `KAFKA_BOOTSTRAP`, `KAFKA_TOPICS` (space or comma list), `KAFKA_MSGS_PER_TOPIC`, `KAFKA_MAX_MESSAGES`, `KAFKA_CREATE_TOPIC`, `KAFKA_REPLICATION_FACTOR`, `KAFKA_KEYTAB`, `KAFKA_PRINCIPAL_HOST`.
+
+---
+
+## `schema-registry-sample-smoke.sh`
+
+- **`kinit kafka/<FQDN>`** (`kafka.service.keytab`) → optional **`kafka-topics --create`** for **`truck_events_stream`** (override **`SR_TOPIC`**).
+- Copies the resulting credential cache, then **`kinit registry/<FQDN>`** (`registry.service.keytab`) so the default ccache matches the registry service host (as in your **`registry/ub22j11p3-49…`** keytab).
+- Runs Hortonworks **`KafkaAvroSerDesApp`** from **`${REGISTRY_HOME}/examples/schema-registry/avro`**: producer (**`-sm`**) then consumer (**`-cm`**). Java uses **`KRB5CCNAME`** pointing at the **saved Kafka ccache** so Kafka SASL still sees a **kafka** ticket (registry alone is not valid as the Kafka client principal on most clusters).
+- Resolves the examples JAR with a **glob** (default **`avro-examples-*.jar`** under **`${AVRO_EXAMPLES_DIR}`**; override **`AVRO_EXAMPLES_JAR_GLOB`**). If several match, picks the **last** after **`sort -V`** (highest-looking version).
+- Builds **`-cp`** from explicit **`*.jar`** lists: **`${AVRO_EXAMPLES_DIR}/lib`**, optional **`/tmp/libs`**, then **Kafka** then **registry** — same idea as  
+  **`…/avro-examples-*.jar:/tmp/libs/*:…/kafka3/libs/*:…/registry/libs/*`** (producer) and **`…/kafka/libs/*`** (consumer). **Producer** prefers **`${ODP_STACK_ROOT}/kafka3/libs`** or **`kafka3-broker/libs`**; **consumer** prefers **`${ODP_STACK_ROOT}/kafka/libs`** or **`kafka-broker/libs`**. **`ODP_STACK_ROOT`** defaults to the parent of **`REGISTRY_HOME`** when it ends with **`/registry`** (e.g. **`/usr/odp/current`** or **`/usr/odp/3.3.6.2-1`**). Override dirs with **`KAFKA3_LIBS_DIR`** / **`KAFKA_LIBS_DIR`**, the full classpath with **`REGISTRY_JAVA_CP`**, or extra jar dirs with **`REGISTRY_CP_DIRS`**.
+- **`schema.registry.url`** defaults to **`http://$(hostname -f):7788/api/v1`**; **`bootstrap.servers`** default **`$(hostname -f):6667`** (same style as other smoke scripts).
+
+```bash
+sudo ./schema-registry-sample-smoke.sh
+```
+
+**Env:** `REGISTRY_HOME`, `AVRO_EXAMPLES_DIR`, `AVRO_EXAMPLES_JAR_GLOB`, `ODP_STACK_ROOT`, `KAFKA_HOME`, `KAFKA3_LIBS_DIR`, `KAFKA_LIBS_DIR`, `KAFKA_BOOTSTRAP`, `SCHEMA_REGISTRY_URL`, `KAFKA_CLIENT_CONFIG`, `KAFKA_JAAS_CONF`, `KAFKA_KEYTAB`, `REGISTRY_KEYTAB`, `KAFKA_PRINCIPAL_HOST`, `REGISTRY_PRINCIPAL_HOST`, `SR_TOPIC`, `REGISTRY_JAVA_CP`, `REGISTRY_CP_DIRS`, `SR_SKIP_TOPIC_CREATE`, `SR_SKIP_PRODUCER`, `SR_SKIP_CONSUMER`.
 
 ---
 
