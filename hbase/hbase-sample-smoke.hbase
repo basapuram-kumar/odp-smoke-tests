@@ -1,0 +1,11 @@
+create 'sample_table_1', 'cf'
+create 'sample_table_2', 'cf'
+
+put 'sample_table_1', 'row1', 'cf:id', '1'
+put 'sample_table_1', 'row1', 'cf:name', 'name_1'
+put 'sample_table_1', 'row1', 'cf:value', '100'
+put 'sample_table_1', 'row2', 'cf:id', '2'
+put 'sample_table_1', 'row2', 'cf:name', 'name_2'
+put 'sample_table_1', 'row2', 'cf:value', '200'
+
+scan 'sample_table_1'
