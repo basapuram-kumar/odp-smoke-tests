@@ -19,6 +19,15 @@ cp configs/ambari.env.example configs/ambari.env
 
 `configs/ambari.env` is gitignored. Variables: `AMBARI_BASE_URL`, `AMBARI_USER`, `AMBARI_PASSWORD`.
 
+### `configs/ranger.env` (optional, for Ranger REST scripts)
+
+```bash
+cp configs/ranger.env.example configs/ranger.env
+# set RANGER_PASSWORD (and optionally RANGER_BASE_URL)
+```
+
+Used by `ranger-yarn-all-queue-users-add.sh`. `ranger.env` is gitignored.
+
 You can skip Ambari for some flows by exporting **`CLUSTER_NAME`** (and, for Kudu CLI master override, **`KUDU_MASTER_ADDRESSES`** when documented below).
 
 ### `configs/hive.env` (optional)
@@ -46,6 +55,8 @@ Only if you want to override Hive-related settings. See `configs/hive.env.exampl
 | `spark-3.5.1-pi-sample-smoke.sh` | Same | Spark **3.5.1** (`spark3_3_5_1-client`) + YARN |
 | `spark-3.5.5-pi-sample-smoke.sh` | Same | Spark **3.5.5** (`spark3-client`, glob `spark-examples_*.jar`) + YARN |
 | `flink-sample-smoke.sh` | **`flink/<FQDN>`** + Flink service keytab | Flink on YARN (host with `flink.service.keytab`) |
+| `ozone-sample-smoke.sh` | **`hdfs-${CLUSTER_NAME}`** (or **`OZONE_PRINCIPAL`**) + hdfs headless keytab, or existing ticket | Ozone client / edge with **`ozone`** CLI and OM config |
+| `ranger-yarn-all-queue-users-add.sh` | Ambari + **Ranger admin** REST (`RANGER_USER` / **`RANGER_PASSWORD`**) | Edge / ops host with **`curl`** + **`python3`** |
 
 > **Note:** `yarn-sample-smoke.sh` uses the **HDFS headless** keytab and **`hdfs-<cluster>`** principal (not `yarn-ats-`). Override in the script or with env vars if your site differs.
 
@@ -276,6 +287,48 @@ sudo ./flink-sample-smoke.sh
 
 ---
 
+## `ozone-sample-smoke.sh`
+
+- Runs **`ozone --config … sh`** for a disposable volume (default name **`ods<host>_<epoch>_<pid>`**), bucket, and key: **volume create → volume info → (optional list) → bucket create → bucket info → key put → key info → key get → key delete → bucket delete → volume delete**. No interactive **`-r`** deletes on the happy path.
+- Default OM config path: **`/etc/hadoop-ozone/conf/ozone.om`** (**`OZONE_OM_CONFIG`**). Default CLI: **`ozone`** on **`PATH`** (**`OZONE_CLI`**).
+- **Kerberos:** **`kinit -kt OZONE_KEYTAB OZONE_PRINCIPAL`** unless **`OZONE_SKIP_KINIT=1`**. If **`OZONE_PRINCIPAL`** is unset but **`CLUSTER_NAME`** is set, principal defaults to **`hdfs-${CLUSTER_NAME}`** with **`OZONE_KEYTAB`** defaulting to **`/etc/security/keytabs/hdfs.headless.keytab`** (volume creation is admin-only on many clusters).
+- Optional **`OZONE_OM_SERVICE_ID`**: volume create / info / delete use **`o3://${OZONE_OM_SERVICE_ID}/<volumeName>`** while bucket and key paths stay **`/<volume>/<bucket>/<key>`** as in the Ozone shell docs.
+- **`OZONE_VOLUME_LIST_ALL=1`** runs **`oz sh volume list --all`** (can be slow on large clusters). **`OZONE_CLEANUP_ON_FAIL=1`** runs destructive recursive deletes with piped **`yes`** if a step fails after the volume exists.
+
+```bash
+export CLUSTER_NAME=mycluster   # or set OZONE_PRINCIPAL explicitly
+sudo ./ozone-sample-smoke.sh
+# or reuse an existing ticket:
+OZONE_SKIP_KINIT=1 ./ozone-sample-smoke.sh
+```
+
+**Env:** `OZONE_CLI`, `OZONE_OM_CONFIG`, `OZONE_SKIP_KINIT`, `OZONE_KEYTAB`, `OZONE_PRINCIPAL`, `CLUSTER_NAME`, `OZONE_OM_SERVICE_ID`, `OZONE_VOLUME`, `OZONE_BUCKET`, `OZONE_KEY_NAME`, `OZONE_VOLUME_LIST_ALL`, `OZONE_CLEANUP_ON_FAIL`.
+
+---
+
+## `ranger-yarn-all-queue-users-add.sh`
+
+- **Goal:** add UNIX users to the Ranger YARN policy **`all - queue`** (override **`RANGER_POLICY_NAME`**) by **GET → merge → PUT** so you do not hardcode policy id, guid, or service name in curl.
+- **Ranger URL:** if **`RANGER_BASE_URL`** is unset (e.g. `http://ub20j11p3-43.acceldata.ce:6080`), it is discovered from Ambari: **`ranger-admin-site`** active tag → **`policymgr_external_url`**, else first **`RANGER_ADMIN`** host + **`ranger.service.http.port`** (default **6080**). Set **`RANGER_BASE_URL`** to skip Ambari entirely.
+- **Ambari:** same **`configs/ambari.env`** / **`CLUSTER_NAME`** pattern as other scripts when discovery is used.
+- **YARN service in Ranger:** defaults to the first Ranger service with **`type`** **`yarn`**; override **`RANGER_YARN_SERVICE_NAME`** (e.g. **`ub20j11p3_yarn`**). Optional **`RANGER_POLICY_ID`** skips listing.
+- **Users to add:** **`RANGER_ADD_USERS`** (comma/space) and/or extra script arguments; merged into the first **`policyItems`** block that grants **`admin-queue`** (same layout as the default “all - queue” policy). **`RANGER_DRY_RUN=1`** prints merged JSON only.
+
+```bash
+cp configs/ranger.env.example configs/ranger.env && vi configs/ranger.env   # set RANGER_PASSWORD
+RANGER_ADD_USERS=registry,flink,nifiregistry ./ranger-yarn-all-queue-users-add.sh
+# Or export only for one run:
+export RANGER_PASSWORD='…'
+RANGER_ADD_USERS=registry,flink ./ranger-yarn-all-queue-users-add.sh
+# Or with explicit Ranger URL (no Ambari), still from ranger.env or env:
+RANGER_BASE_URL=http://ranger-host:6080 RANGER_YARN_SERVICE_NAME=mycluster_yarn \
+  RANGER_ADD_USERS=druid ./ranger-yarn-all-queue-users-add.sh
+```
+
+**Env:** `AMBARI_*`, `CLUSTER_NAME`, `RANGER_ENV_FILE` (alias: `RANGER_CONFIG_FILE`), `RANGER_PASSWORD_FILE`, `RANGER_BASE_URL`, `RANGER_USER`, `RANGER_PASSWORD`, `RANGER_YARN_SERVICE_NAME`, `RANGER_POLICY_NAME`, `RANGER_POLICY_ID`, `RANGER_ADD_USERS`, `RANGER_DRY_RUN`, `CURL_EXTRA_OPTS` (e.g. **`-k`** for TLS). Prefer **`configs/ranger.env`** (see **`configs/ranger.env.example`**) instead of exporting **`RANGER_PASSWORD`** on the shell.
+
+---
+
 ## Common issues
 
 - **`kinit` principal must match the keytab** (cluster suffix for headless users, **`<service>/<FQDN>`** for service keytabs).
@@ -284,6 +337,8 @@ sudo ./flink-sample-smoke.sh
 - **Kafka consumer:** `--from-beginning` reads from the start of the log; **`KAFKA_MAX_MESSAGES`** may need raising if the topic already has data.
 - **Kudu `table scan`:** native table name is usually **`impala::<db>.<table>`**; confirm with **`table list`** and set **`KUDU_NATIVE_TABLE`** if different.
 - **Flink YARN session:** **`IllegalConfigurationException`** on TaskManager memory means **`-tm`** (and total process memory) is too small for Flink’s internal minimums — raise **`FLINK_YARN_SESSION_ARGS`** (e.g. **`-tm 4096m`** or higher), or reduce reserved fractions in Flink **`config.yaml`** on the cluster.
+- **Ranger policy PUT:** Ranger expects the **full** policy document returned by GET (with merged **`users`**). If PUT fails after an upgrade, set **`RANGER_POLICY_ID`** and compare your Ranger version’s REST schema to the payload from **`RANGER_DRY_RUN=1`**.
+- **Cross-host principal mismatch:** host-based service scripts (Hive/Impala/Kafka/Kafka3/Schema-Registry/Spark/Flink/Kudu CLI) default to **`hostname -f`** for `<service>/<host>`. If a run unexpectedly uses another host, check and unset stale shell overrides like **`*_PRINCIPAL_HOST`**; for Hive, config-file host pinning is ignored by default unless **`HIVE_USE_CONFIG_PRINCIPAL_HOST=1`**.
 
 ---
 

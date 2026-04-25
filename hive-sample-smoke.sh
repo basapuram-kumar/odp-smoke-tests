@@ -10,6 +10,7 @@
 #   HIVE_CONFIG_FILE     default <script-dir>/configs/hive.env
 #   HIVE_KEYTAB          default /etc/security/keytabs/hive.service.keytab
 #   HIVE_PRINCIPAL_HOST  host part of principal (default: hostname -f / hostname)
+#   HIVE_USE_CONFIG_PRINCIPAL_HOST if "1", allow HIVE_PRINCIPAL_HOST from configs/hive.env
 #   HIVE_JDBC_URL        optional; if unset, beeline is run without -u
 #   HIVE_SMOKE_SQL       default <script-dir>/sql/hive-sample-smoke.sql
 #
@@ -19,6 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HIVE_CONFIG_FILE="${HIVE_CONFIG_FILE:-${SCRIPT_DIR}/configs/hive.env}"
 HIVE_KEYTAB="${HIVE_KEYTAB:-/etc/security/keytabs/hive.service.keytab}"
 SQL_FILE="${HIVE_SMOKE_SQL:-${SCRIPT_DIR}/sql/hive-sample-smoke.sql}"
+HIVE_USE_CONFIG_PRINCIPAL_HOST="${HIVE_USE_CONFIG_PRINCIPAL_HOST:-0}"
 
 die() {
   echo "ERROR: $*" >&2
@@ -90,7 +92,15 @@ if [[ -f "$HIVE_CONFIG_FILE" ]]; then
 fi
 
 HIVE_KEYTAB="${HIVE_KEYTAB:-${_cfg_HIVE_KEYTAB:-/etc/security/keytabs/hive.service.keytab}}"
-HIVE_PRINCIPAL_HOST="${HIVE_PRINCIPAL_HOST:-${_cfg_HIVE_PRINCIPAL_HOST:-}}"
+# Default behavior: always use current host for hive/<FQDN> principal to avoid
+# accidental cross-host settings from configs/hive.env.
+if [[ -n "${HIVE_PRINCIPAL_HOST:-}" ]]; then
+  :
+elif [[ "$HIVE_USE_CONFIG_PRINCIPAL_HOST" == "1" && -n "${_cfg_HIVE_PRINCIPAL_HOST:-}" ]]; then
+  HIVE_PRINCIPAL_HOST="${_cfg_HIVE_PRINCIPAL_HOST}"
+else
+  HIVE_PRINCIPAL_HOST=""
+fi
 HIVE_JDBC_URL="${HIVE_JDBC_URL:-${_cfg_HIVE_JDBC_URL:-}}"
 
 if [[ ! -r "$HIVE_KEYTAB" ]]; then
