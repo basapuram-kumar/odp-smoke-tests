@@ -34,6 +34,10 @@ You can skip Ambari for some flows by exporting **`CLUSTER_NAME`** (and, for Kud
 
 Only if you want to override Hive-related settings. See `configs/hive.env.example`. `hive.env` is gitignored.
 
+### `configs/sqoop.env` (optional, for `sqoop-smoke-test.sh`)
+
+Copy from `configs/sqoop.env.example` if you need non-default JDBC host, user, or password. `sqoop.env` is gitignored. If you previously copied an older example that set **`hive`** / **`sqoop_test`**, remove or update the file so it matches `sql/sqoop-smoke-mysql-setup.sql` (database **`sqoop_smoke`**, user **`sqoop_smoke`**).
+
 ---
 
 ## Scripts overview
@@ -43,6 +47,7 @@ Only if you want to override Hive-related settings. See `configs/hive.env.exampl
 | `hdfs-headless-smoke.sh` | `hdfs-<cluster>` + hdfs headless keytab | Node with keytab |
 | `yarn-sample-smoke.sh` | Same as HDFS (`hdfs-<cluster>`) | YARN client / edge |
 | `hive-sample-smoke.sh` | `hive/<FQDN>` + Hive service keytab | HiveServer2 host |
+| `sqoop-smoke-test.sh` | MySQL **`sqoop_smoke`** user (TCP JDBC; optional `configs/sqoop.env`) | Hadoop edge / gateway with **`sqoop`** + **`hdfs`** |
 | `impala-sample-smoke.sh` | `impala/<FQDN>` + Impala service keytab | Impala / coordinator |
 | `kudu-sample-smoke.sh` | Impala then `kudu/<FQDN>` for CLI | Impala + Kudu CLI keytab |
 | `hbase-sample-smoke.sh` | `hbase-<cluster>` + HBase headless keytab | RegionServer / client |
@@ -100,6 +105,26 @@ sudo ./hive-sample-smoke.sh
 ```
 
 **Env:** `HIVE_KEYTAB`, `HIVE_PRINCIPAL_HOST`, `HIVE_JDBC_URL` (optional override), `HIVE_SMOKE_SQL`, `HIVE_CONFIG_FILE`.
+
+---
+
+## `sqoop-smoke-test.sh`
+
+- **One-time MySQL setup** (run as a MySQL admin from the repo root; use **`mysql -u root -p`** if `root` requires a password):
+
+```bash
+mysql -u root < sql/sqoop-smoke-mysql-setup.sql
+```
+
+  This creates database **`sqoop_smoke`**, user **`sqoop_smoke`** (password **`sqoop_smoke`**), table **`smoke_import`** with five rows, and empty **`smoke_export`** for optional round-trip tests.
+
+- **Sqoop:** default is **import only** (`SQOOP_SKIP_EXPORT=1`): **`sqoop import`** from **`smoke_import`** into a fresh HDFS directory under **`/tmp/`**, then checks **`_SUCCESS`** and row count in **`part-m-*`**.
+
+```bash
+./sqoop-smoke-test.sh
+```
+
+**Env:** `SQOOP_CONFIG_FILE`, `SQOOP_MYSQL_HOST`, `SQOOP_MYSQL_*`, `SQOOP_SKIP_EXPORT`, `SQOOP_MYSQL_VERIFY`, `SQOOP_HDFS_BASE_DIR`, etc. See the script header and `configs/sqoop.env.example`.
 
 ---
 
@@ -350,6 +375,7 @@ sample-jobs/
   configs/
     ambari.env.example
     hive.env.example
+    sqoop.env.example
   kafka/
     client-sasl.properties
   hbase/
@@ -357,6 +383,8 @@ sample-jobs/
   sql/
     hive-sample-smoke.sql
     impala-sample-smoke.sql
+    sqoop-smoke-mysql-setup.sql
+  sqoop-smoke-test.sh
   scala/
     spark-sample-smoke.scala
   *.sh                      # smoke entrypoints (incl. Spark Pi + flink-sample-smoke.sh)
