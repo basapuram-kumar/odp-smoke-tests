@@ -47,6 +47,7 @@ Copy from `configs/sqoop.env.example` if you need non-default JDBC host, user, o
 | `hdfs-headless-smoke.sh` | `hdfs-<cluster>` + hdfs headless keytab | Node with keytab |
 | `yarn-sample-smoke.sh` | Same as HDFS (`hdfs-<cluster>`) | YARN client / edge |
 | `hive-sample-smoke.sh` | `hive/<FQDN>` + Hive service keytab | HiveServer2 host |
+| `hive-spark2-compat-smoke.sh` | **hive** + **spark** + **hdfs-\<cluster\>** keytabs | Hive + Spark2 client / edge |
 | `sqoop-smoke-test.sh` | MySQL **`sqoop_smoke`** user (TCP JDBC; optional `configs/sqoop.env`) | Hadoop edge / gateway with **`sqoop`** + **`hdfs`** |
 | `impala-sample-smoke.sh` | `impala/<FQDN>` + Impala service keytab | Impala / coordinator |
 | `kudu-sample-smoke.sh` | Impala then `kudu/<FQDN>` for CLI | Impala + Kudu CLI keytab |
@@ -105,6 +106,34 @@ sudo ./hive-sample-smoke.sh
 ```
 
 **Env:** `HIVE_KEYTAB`, `HIVE_PRINCIPAL_HOST`, `HIVE_JDBC_URL` (optional override), `HIVE_SMOKE_SQL`, `HIVE_CONFIG_FILE`.
+
+---
+
+## `hive-spark2-compat-smoke.sh`
+
+Hive ↔ Spark2 table round-trip on a shared external HDFS path (managed warehouse is typically `hive`-only and blocks the `spark` user).
+
+1. **HDFS:** `kinit` as **`hdfs-<cluster>`** (or **`HDFS_PRINCIPAL`**), `mkdir` + `chmod 777` on **`COMPAT_LOC`** (default `/tmp/hive_spark2_compat_<ts>`).
+2. **Hive:** create DB + external **ORC** table `hive_written`, insert rows, select.
+3. **Spark2:** `spark-sql` on YARN (`SPARK_MAJOR_VERSION=2`) reads `hive_written`, writes external **ORC** `spark_orc` and **Parquet** `spark_parquet`.
+4. **Hive:** read `spark_orc` back (required PASS).
+
+SQL templates under `sql/hive-spark2-compat-*.sql` (placeholders `__DB__` / `__LOC__`).
+
+```bash
+# Prefer setting cluster name so Ambari is not required for HDFS setup:
+export CLUSTER_NAME=odp2007
+# or: export HDFS_PRINCIPAL=hdfs-odp2007
+sudo ./hive-spark2-compat-smoke.sh
+
+# Optional Parquet probe (often fails on some ODP Hive 4 builds; non-fatal unless FAIL_ON_PARQUET=1):
+TEST_PARQUET=1 sudo -E ./hive-spark2-compat-smoke.sh
+
+# Drop DB + HDFS path after success:
+CLEANUP=1 CLUSTER_NAME=odp2007 sudo -E ./hive-spark2-compat-smoke.sh
+```
+
+**Env:** `HIVE_KEYTAB`, `HIVE_PRINCIPAL_HOST`, `HIVE_JDBC_URL`, `SPARK_KEYTAB`, `SPARK_PRINCIPAL_HOST`, `SPARK2_CLIENT_HOME`, `SPARK_SQL`, `SPARK_MAJOR_VERSION`, `HDFS_KEYTAB`, `HDFS_PRINCIPAL`, `CLUSTER_NAME`, `AMBARI_*`, `COMPAT_DB`, `COMPAT_LOC`, `SKIP_HDFS_SETUP`, `TEST_PARQUET`, `FAIL_ON_PARQUET`, `CLEANUP`.
 
 ---
 
@@ -364,6 +393,7 @@ RANGER_BASE_URL=http://ranger-host:6080 RANGER_YARN_SERVICE_NAME=mycluster_yarn 
 - **Flink YARN session:** **`IllegalConfigurationException`** on TaskManager memory means **`-tm`** (and total process memory) is too small for Flink’s internal minimums — raise **`FLINK_YARN_SESSION_ARGS`** (e.g. **`-tm 4096m`** or higher), or reduce reserved fractions in Flink **`config.yaml`** on the cluster.
 - **Ranger policy PUT:** Ranger expects the **full** policy document returned by GET (with merged **`users`**). If PUT fails after an upgrade, set **`RANGER_POLICY_ID`** and compare your Ranger version’s REST schema to the payload from **`RANGER_DRY_RUN=1`**.
 - **Cross-host principal mismatch:** host-based service scripts (Hive/Impala/Kafka/Kafka3/Schema-Registry/Spark/Flink/Kudu CLI) default to **`hostname -f`** for `<service>/<host>`. If a run unexpectedly uses another host, check and unset stale shell overrides like **`*_PRINCIPAL_HOST`**; for Hive, config-file host pinning is ignored by default unless **`HIVE_USE_CONFIG_PRINCIPAL_HOST=1`**.
+- **Hive ↔ Spark2 managed warehouse:** `spark` often cannot traverse `/warehouse/tablespace/managed/hive` (`drwx------`). `hive-spark2-compat-smoke.sh` uses an external `/tmp/...` location for that reason. Hive reading Spark **Parquet** may still fail (missing JTS / Parquet–Hadoop API skew); ORC round-trip is the required path — use **`TEST_PARQUET=1`** only as a probe.
 
 ---
 
@@ -382,9 +412,11 @@ sample-jobs/
     hbase-sample-smoke.hbase
   sql/
     hive-sample-smoke.sql
+    hive-spark2-compat-*.sql
     impala-sample-smoke.sql
     sqoop-smoke-mysql-setup.sql
   sqoop-smoke-test.sh
+  hive-spark2-compat-smoke.sh
   scala/
     spark-sample-smoke.scala
   *.sh                      # smoke entrypoints (incl. Spark Pi + flink-sample-smoke.sh)
