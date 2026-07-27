@@ -1,8 +1,5 @@
--- PART 1: Hive writes an external ORC table (placeholders __DB__ / __LOC__)
--- No DB LOCATION: HMS touching a pre-created /tmp path owned by hdfs often fails
--- with MetaException(UndeclaredThrowableException). Tables use explicit LOCATION.
-CREATE DATABASE IF NOT EXISTS __DB__;
-USE __DB__;
+CREATE DATABASE IF NOT EXISTS hive_spark2_compat;
+USE hive_spark2_compat;
 
 DROP TABLE IF EXISTS hive_written;
 CREATE EXTERNAL TABLE hive_written (
@@ -10,7 +7,7 @@ CREATE EXTERNAL TABLE hive_written (
   name STRING,
   amount DOUBLE
 ) STORED AS ORC
-LOCATION '__LOC__/hive_written';
+LOCATION '/tmp/hive_spark2_compat/hive_written';
 
 INSERT INTO hive_written VALUES
   (1, 'alice', 10.5),

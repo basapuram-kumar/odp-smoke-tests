@@ -7,7 +7,8 @@
 #
 # Uses external tables under /tmp/... because the managed warehouse
 # (/warehouse/tablespace/managed/hive) is typically hive-only (drwx------),
-# so the spark user cannot traverse it.
+# so the spark user cannot traverse it. DB is created without LOCATION;
+# each external table sets LOCATION under COMPAT_LOC.
 #
 # Run on a cluster node that has Hive + Spark2 clients and matching keytabs
 # (hive/<host>, spark/<host>, hdfs-<cluster>). Prefer root/sudo for keytab access.
@@ -124,7 +125,9 @@ write_embedded_sql() {
   case "$kind" in
     hive_write)
       cat >"$raw" <<'EMBED_SQL'
-CREATE DATABASE IF NOT EXISTS __DB__ LOCATION '__LOC__';
+-- No DB LOCATION: HMS on a pre-created hdfs-owned /tmp path often fails with
+-- MetaException(UndeclaredThrowableException). Tables use explicit LOCATION.
+CREATE DATABASE IF NOT EXISTS __DB__;
 USE __DB__;
 
 DROP TABLE IF EXISTS hive_written;
@@ -360,6 +363,10 @@ if [[ "$SKIP_HDFS_SETUP" != "1" ]]; then
   kinit -kt "$HDFS_KEYTAB" "$hdfs_principal" || die "hdfs kinit failed"
   hdfs dfs -rm -r -f "$COMPAT_LOC" >/dev/null 2>&1 || true
   hdfs dfs -mkdir -p "$COMPAT_LOC"
+  # hive + spark both need to create table dirs under this path
+  hdfs dfs -chown -R hive:hdfs "$COMPAT_LOC" 2>/dev/null \
+    || hdfs dfs -chown -R hive:hadoop "$COMPAT_LOC" 2>/dev/null \
+    || true
   hdfs dfs -chmod -R 777 "$COMPAT_LOC"
   hdfs dfs -ls -d "$COMPAT_LOC"
 else
