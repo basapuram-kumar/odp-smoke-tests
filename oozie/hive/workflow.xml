@@ -1,0 +1,37 @@
+<workflow-app xmlns="uri:oozie:workflow:1.0" name="oozie-hive-smoke">
+    <credentials>
+        <credential name="hs2-cred" type="hive2">
+            <property>
+                <name>hive2.jdbc.url</name>
+                <value>${hive2JdbcUrl}</value>
+            </property>
+            <property>
+                <name>hive2.server.principal</name>
+                <value>${hive2Principal}</value>
+            </property>
+        </credential>
+    </credentials>
+    <start to="hive2-node"/>
+    <action name="hive2-node" cred="hs2-cred">
+        <hive2 xmlns="uri:oozie:hive2-action:1.0">
+            <resource-manager>${resourceManager}</resource-manager>
+            <name-node>${nameNode}</name-node>
+            <configuration>
+                <property>
+                    <name>mapred.job.queue.name</name>
+                    <value>${queueName}</value>
+                </property>
+            </configuration>
+            <jdbc-url>${hive2JdbcUrl}</jdbc-url>
+            <script>hive_smoke.hql</script>
+            <param>DB_NAME=${hiveDbName}</param>
+            <param>TABLE_NAME=${hiveTableName}</param>
+        </hive2>
+        <ok to="end"/>
+        <error to="fail"/>
+    </action>
+    <kill name="fail">
+        <message>Hive2 action failed, error message[${wf:errorMessage(wf:lastErrorNode())}]</message>
+    </kill>
+    <end name="end"/>
+</workflow-app>

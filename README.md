@@ -26,13 +26,104 @@ cp configs/ranger.env.example configs/ranger.env
 # set RANGER_PASSWORD (and optionally RANGER_BASE_URL)
 ```
 
-Used by `ranger-yarn-all-queue-users-add.sh`. `ranger.env` is gitignored.
+Used by `ranger-yarn-all-queue-users-add.sh` and `ranger-plugin-connection-smoke.sh`. `ranger.env` is gitignored.
 
 You can skip Ambari for some flows by exporting **`CLUSTER_NAME`** (and, for Kudu CLI master override, **`KUDU_MASTER_ADDRESSES`** when documented below).
 
 ### `configs/hive.env` (optional)
 
 Only if you want to override Hive-related settings. See `configs/hive.env.example`. `hive.env` is gitignored.
+
+### `configs/zeppelin.env` (optional, for `zeppelin-editors-smoke.sh`)
+
+```bash
+cp configs/zeppelin.env.example configs/zeppelin.env
+# set ZEPPELIN_PASSWORD (and optionally ZEPPELIN_BASE_URL)
+```
+
+`zeppelin.env` is gitignored.
+
+### `configs/airflow.env` (optional, for `airflow-sample-smoke.sh`)
+
+```bash
+cp configs/airflow.env.example configs/airflow.env
+# optionally set AIRFLOW_BASE_URL / AIRFLOW_HOME
+```
+
+`airflow.env` is gitignored.
+
+### `configs/clickhouse.env` (optional, for `clickhouse-sample-smoke.sh`)
+
+```bash
+cp configs/clickhouse.env.example configs/clickhouse.env
+# optionally set CLICKHOUSE_HTTP_URL / password
+```
+
+`clickhouse.env` is gitignored.
+
+### `configs/druid.env` (optional, for `druid-sample-smoke.sh`)
+
+```bash
+cp configs/druid.env.example configs/druid.env
+# optionally set DRUID_BROKER_URL / DRUID_SKIP_INGEST
+```
+
+`druid.env` is gitignored.
+
+### `configs/ozone.env` (optional, for `ozone-sample-smoke.sh`)
+
+```bash
+cp configs/ozone.env.example configs/ozone.env
+# optionally set OZONE_CONF_DIR / OZONE_KEYTAB / OZONE_SKIP_HTTP
+```
+
+`ozone.env` is gitignored.
+
+### `configs/nifi.env`, `configs/nifi-registry.env` (optional)
+
+```bash
+cp configs/nifi.env.example configs/nifi.env
+cp configs/nifi-registry.env.example configs/nifi-registry.env
+# optionally set NIFI_URL / NIFI_REGISTRY_URL to skip Ambari discovery
+```
+
+Both are gitignored.
+
+### `configs/jupyterhub.env` (optional, for `jupyterhub-sample-smoke.sh`)
+
+```bash
+cp configs/jupyterhub.env.example configs/jupyterhub.env
+# optionally set JUPYTERHUB_URL / JUPYTERHUB_BASE_URL / JUPYTERHUB_PASSWORD
+```
+
+`jupyterhub.env` is gitignored.
+
+### `configs/knox.env` (optional, for `knox-sample-smoke.sh`)
+
+```bash
+cp configs/knox.env.example configs/knox.env
+# optionally set KNOX_URL / KNOX_USER / KNOX_PASSWORD
+```
+
+`knox.env` is gitignored.
+
+### `configs/infra-solr.env` (optional, for `infra-solr-sample-smoke.sh`)
+
+```bash
+cp configs/infra-solr.env.example configs/infra-solr.env
+# optionally set INFRA_SOLR_HOSTS / INFRA_SOLR_PORT / INFRA_SOLR_READ_KEYTAB
+```
+
+`infra-solr.env` is gitignored.
+
+### `configs/zookeeper.env` (optional, for `zookeeper-sample-smoke.sh`)
+
+```bash
+cp configs/zookeeper.env.example configs/zookeeper.env
+# optionally set ZOOKEEPER_HOSTS / ZOOKEEPER_ADMIN_PORT / ZOOKEEPER_EXPECTED_ZNODES
+```
+
+`zookeeper.env` is gitignored.
 
 ### `configs/sqoop.env` (optional, for `sqoop-smoke-test.sh`)
 
@@ -48,10 +139,11 @@ Copy from `configs/sqoop.env.example` if you need non-default JDBC host, user, o
 | `yarn-sample-smoke.sh` | Same as HDFS (`hdfs-<cluster>`) | YARN client / edge |
 | `hive-sample-smoke.sh` | `hive/<FQDN>` + Hive service keytab | HiveServer2 host |
 | `hive-spark2-compat-smoke.sh` | **hive** + **spark** + **hdfs-\<cluster\>** keytabs | Hive + Spark2 client / edge |
-| `sqoop-smoke-test.sh` | MySQL **`sqoop_smoke`** user (TCP JDBC; optional `configs/sqoop.env`) | Hadoop edge / gateway with **`sqoop`** + **`hdfs`** |
+| `sqoop-smoke-test.sh` | MySQL **`sqoop_smoke`** JDBC + **`hdfs-<cluster>`** (Ambari + hdfs headless keytab; skip with **`SQOOP_SKIP_KINIT=1`**) | Hadoop edge / gateway with **`sqoop`** + **`hdfs`** |
 | `impala-sample-smoke.sh` | `impala/<FQDN>` + Impala service keytab | Impala / coordinator |
 | `kudu-sample-smoke.sh` | Impala then `kudu/<FQDN>` for CLI | Impala + Kudu CLI keytab |
 | `hbase-sample-smoke.sh` | `hbase-<cluster>` + HBase headless keytab | RegionServer / client |
+| `oozie-sample-smoke.sh` | **`hdfs-<cluster>`** + hdfs headless keytab (Ambari; shell + hive2 workflows) | Oozie client / edge with **`oozie`** + **`hdfs`** |
 | `kafka-sample-smoke.sh` | `kafka/<FQDN>` + Kafka service keytab | Broker / client (Kafka 2 path) |
 | `kafka3-sample-smoke.sh` | Same keytab / principal | **Kafka 3** (`kafka3-broker`), multi-topic |
 | `schema-registry-sample-smoke.sh` | **kafka** + **registry** service keytabs | Registry host + Kafka broker |
@@ -61,8 +153,19 @@ Copy from `configs/sqoop.env.example` if you need non-default JDBC host, user, o
 | `spark-3.5.1-pi-sample-smoke.sh` | Same | Spark **3.5.1** (`spark3_3_5_1-client`) + YARN |
 | `spark-3.5.5-pi-sample-smoke.sh` | Same | Spark **3.5.5** (`spark3-client`, glob `spark-examples_*.jar`) + YARN |
 | `flink-sample-smoke.sh` | **`flink/<FQDN>`** + Flink service keytab | Flink on YARN (host with `flink.service.keytab`) |
-| `ozone-sample-smoke.sh` | **`hdfs-${CLUSTER_NAME}`** (or **`OZONE_PRINCIPAL`**) + hdfs headless keytab, or existing ticket | Ozone client / edge with **`ozone`** CLI and OM config |
 | `ranger-yarn-all-queue-users-add.sh` | Ambari + **Ranger admin** REST (`RANGER_USER` / **`RANGER_PASSWORD`**) | Edge / ops host with **`curl`** + **`python3`** |
+| `ranger-plugin-connection-smoke.sh` | Ambari (optional) + **Ranger admin** REST Test Connection for each enabled service | Host that can reach Ranger Admin (`6080`) |
+| `zeppelin-editors-smoke.sh` | Zeppelin Shiro login (`ZEPPELIN_USER` / **`ZEPPELIN_PASSWORD`**) | Host that can reach Zeppelin UI/API (`9995`) |
+| `airflow-sample-smoke.sh` | **`airflow-<cluster>`** headless keytab (optional) + Airflow CLI / health | Airflow host (`AIRFLOW_HOME` venv; web `:8889`) |
+| `clickhouse-sample-smoke.sh` | ClickHouse HTTP (`default` user; optional Kerberos / native client) | Host that can reach ClickHouse HTTP (`8123`) |
+| `druid-sample-smoke.sh` | **`druid-<cluster>`** headless keytab + SPNEGO REST (health, SQL, ingest) | Host that can reach Broker/Coordinator/Overlord |
+| `ozone-sample-smoke.sh` | **`hdfs-<cluster>`** + Ozone headless keytab (CLI data path, HA roles, SPNEGO web) | Host with the **`ozone`** client |
+| `nifi-sample-smoke.sh` | NiFi REST (anonymous over HTTP, SPNEGO over HTTPS) | Host that can reach NiFi (`9090` / `9091`) |
+| `nifi-registry-sample-smoke.sh` | NiFi Registry REST (anonymous over HTTP, SPNEGO over HTTPS) | Host that can reach the Registry (`61080` / `61443`) |
+| `jupyterhub-sample-smoke.sh` | JupyterHub form login (**`JUPYTERHUB_PASSWORD`**; Ambari-discovered by default) | Host that can reach JupyterHub (`8000`) |
+| `knox-sample-smoke.sh` | Knox gateway HTTP basic against the topology's identity store (**`KNOX_PASSWORD`**; Ambari-discovered by default) | Host that can reach the gateway (`8443`) |
+| `infra-solr-sample-smoke.sh` | **`infra-solr/<FQDN>`** + Infra Solr service keytab over SPNEGO (plus a **`dev`**-role keytab for the query read-back) | An **`INFRA_SOLR`** host (`8886`), as root for the keytab |
+| `zookeeper-sample-smoke.sh` | Four-letter words and AdminServer need no auth; the `zkCli.sh` data path uses the ticket cache (**`ambari-qa-<cluster>`** + smokeuser keytab) | Host that can reach `2181` on every **`ZOOKEEPER_SERVER`**, as root for the keytab |
 
 > **Note:** `yarn-sample-smoke.sh` uses the **HDFS headless** keytab and **`hdfs-<cluster>`** principal (not `yarn-ats-`). Override in the script or with env vars if your site differs.
 
@@ -139,10 +242,13 @@ CLEANUP=1 CLUSTER_NAME=odp2007 sudo -E ./hive-spark2-compat-smoke.sh
 
 ## `sqoop-smoke-test.sh`
 
-- **One-time MySQL setup** (run as a MySQL admin from the repo root; use **`mysql -u root -p`** if `root` requires a password):
+- **Kerberos:** Ambari cluster name (or **`CLUSTER_NAME`**), then **`kinit`** as **`hdfs-<cluster>`** with `/etc/security/keytabs/hdfs.headless.keytab` (same pattern as HDFS/YARN smokes). Set **`SQOOP_SKIP_KINIT=1`** to skip.
+- **One-time MySQL setup** (run as a MySQL admin from the repo root; use **`mysql -u root -p`** if `root` requires a password), or set **`SQOOP_MYSQL_SETUP=1`**:
 
 ```bash
 mysql -u root < sql/sqoop-smoke-mysql-setup.sql
+# or:
+SQOOP_MYSQL_SETUP=1 ./sqoop-smoke-test.sh
 ```
 
   This creates database **`sqoop_smoke`**, user **`sqoop_smoke`** (password **`sqoop_smoke`**), table **`smoke_import`** with five rows, and empty **`smoke_export`** for optional round-trip tests.
@@ -150,10 +256,10 @@ mysql -u root < sql/sqoop-smoke-mysql-setup.sql
 - **Sqoop:** default is **import only** (`SQOOP_SKIP_EXPORT=1`): **`sqoop import`** from **`smoke_import`** into a fresh HDFS directory under **`/tmp/`**, then checks **`_SUCCESS`** and row count in **`part-m-*`**.
 
 ```bash
-./sqoop-smoke-test.sh
+sudo ./sqoop-smoke-test.sh
 ```
 
-**Env:** `SQOOP_CONFIG_FILE`, `SQOOP_MYSQL_HOST`, `SQOOP_MYSQL_*`, `SQOOP_SKIP_EXPORT`, `SQOOP_MYSQL_VERIFY`, `SQOOP_HDFS_BASE_DIR`, etc. See the script header and `configs/sqoop.env.example`.
+**Env:** `SQOOP_CONFIG_FILE`, `AMBARI_*`, `CLUSTER_NAME`, `HDFS_KEYTAB`, `SQOOP_SKIP_KINIT`, `SQOOP_MYSQL_SETUP`, `SQOOP_MYSQL_HOST`, `SQOOP_MYSQL_*`, `SQOOP_SKIP_EXPORT`, `SQOOP_MYSQL_VERIFY`, `SQOOP_HDFS_BASE_DIR`, etc. See the script header and `configs/sqoop.env.example`.
 
 ---
 
@@ -196,6 +302,36 @@ sudo ./hbase-sample-smoke.sh
 ```
 
 **Env:** `HBASE_KEYTAB`, `HBASE_SMOKE_SCRIPT`, `HBASE_SMOKE_DROP_FIRST`, `CLUSTER_NAME`, Ambari vars.
+
+---
+
+## `oozie-sample-smoke.sh`
+
+- Ambari cluster name (or **`CLUSTER_NAME`**), then **`kinit`** as **`hdfs-<cluster>`** with `/etc/security/keytabs/hdfs.headless.keytab` (YARN queue ACLs usually allow **hdfs**, not the **oozie** service user).
+- Clears stale **`~/.oozie-auth-token-*`** and disables the Oozie auth token cache so the CLI does not reuse a prior principal.
+- Resolves **`OOZIE_URL`** (`oozie.base.url`), **`nameNode`**, and **`resourceManager`** from cluster configs (overridable).
+- Runs each workflow in **`OOZIE_WORKFLOWS`** (default `shell,hive`): stages `oozie/<name>/` under **`/user/hdfs/oozie_smoke_*/<name>`**, submits with **`oozie job -run`**, polls until **`SUCCEEDED`**, then prints a PASS/FAIL/SKIPPED summary. Exit is non-zero if any workflow fails.
+
+| Workflow | Directory | What it does |
+| --- | --- | --- |
+| `shell` | `oozie/shell/` | shell action `echo Hello Oozie` + `capture-output` verified by a decision node |
+| `hive` | `oozie/hive/` | **`hive2`** action (beeline to HiveServer2) running `hive_smoke.hql`: create database, create ORC table, insert 3 rows, `COUNT(*)` / `ORDER BY` / `SUM`, then drop |
+
+```bash
+sudo ./oozie-sample-smoke.sh
+
+# One workflow only:
+OOZIE_WORKFLOWS=hive sudo -E ./oozie-sample-smoke.sh
+```
+
+### Hive workflow notes
+
+- Uses an Oozie **`hive2` credential** (`oozie.credentials.credentialclasses` must contain `hive2=...Hive2Credentials`) to get a HiveServer2 delegation token for the launcher.
+- HiveServer2 is discovered from Ambari (`HIVE/HIVE_SERVER`) plus `hive-site.xml` (transport mode, port, `hive.server2.authentication.kerberos.principal` with `_HOST` resolved). If it cannot be resolved the workflow is reported **SKIPPED**, not failed.
+- **`OOZIE_HIVE2_JDBC_URL` must not contain `principal=`** - Oozie appends it from the credential and HiveConnection rejects duplicates.
+- The workflow creates a fresh per-run database so the submitting user owns it. Stock Ranger policies give group `public` only `create` on a database; `{OWNER}` then covers insert/select/drop. Reusing `default` fails on `DROP`, which Ranger authorizes against the database rather than the table.
+
+**Env:** `AMBARI_*`, `CLUSTER_NAME`, `HDFS_KEYTAB`, `OOZIE_URL`, `OOZIE_NAME_NODE`, `OOZIE_RESOURCE_MANAGER`, `OOZIE_QUEUE`, `OOZIE_WORKFLOWS`, `OOZIE_WORKFLOW_ROOT`, `OOZIE_WORKFLOW_DIR` (legacy single-dir mode), `OOZIE_HDFS_APP_DIR`, `OOZIE_POLL_SECONDS`, `OOZIE_TIMEOUT_SECONDS`, `HIVE_SITE_XML`, `OOZIE_HIVE2_JDBC_URL`, `OOZIE_HIVE2_PRINCIPAL`, `OOZIE_HIVE_DB`, `OOZIE_HIVE_TABLE`.
 
 ---
 
@@ -341,25 +477,6 @@ sudo ./flink-sample-smoke.sh
 
 ---
 
-## `ozone-sample-smoke.sh`
-
-- Runs **`ozone --config … sh`** for a disposable volume (default name **`ods<host>_<epoch>_<pid>`**), bucket, and key: **volume create → volume info → (optional list) → bucket create → bucket info → key put → key info → key get → key delete → bucket delete → volume delete**. No interactive **`-r`** deletes on the happy path.
-- Default OM config path: **`/etc/hadoop-ozone/conf/ozone.om`** (**`OZONE_OM_CONFIG`**). Default CLI: **`ozone`** on **`PATH`** (**`OZONE_CLI`**).
-- **Kerberos:** **`kinit -kt OZONE_KEYTAB OZONE_PRINCIPAL`** unless **`OZONE_SKIP_KINIT=1`**. If **`OZONE_PRINCIPAL`** is unset but **`CLUSTER_NAME`** is set, principal defaults to **`hdfs-${CLUSTER_NAME}`** with **`OZONE_KEYTAB`** defaulting to **`/etc/security/keytabs/hdfs.headless.keytab`** (volume creation is admin-only on many clusters).
-- Optional **`OZONE_OM_SERVICE_ID`**: volume create / info / delete use **`o3://${OZONE_OM_SERVICE_ID}/<volumeName>`** while bucket and key paths stay **`/<volume>/<bucket>/<key>`** as in the Ozone shell docs.
-- **`OZONE_VOLUME_LIST_ALL=1`** runs **`oz sh volume list --all`** (can be slow on large clusters). **`OZONE_CLEANUP_ON_FAIL=1`** runs destructive recursive deletes with piped **`yes`** if a step fails after the volume exists.
-
-```bash
-export CLUSTER_NAME=mycluster   # or set OZONE_PRINCIPAL explicitly
-sudo ./ozone-sample-smoke.sh
-# or reuse an existing ticket:
-OZONE_SKIP_KINIT=1 ./ozone-sample-smoke.sh
-```
-
-**Env:** `OZONE_CLI`, `OZONE_OM_CONFIG`, `OZONE_SKIP_KINIT`, `OZONE_KEYTAB`, `OZONE_PRINCIPAL`, `CLUSTER_NAME`, `OZONE_OM_SERVICE_ID`, `OZONE_VOLUME`, `OZONE_BUCKET`, `OZONE_KEY_NAME`, `OZONE_VOLUME_LIST_ALL`, `OZONE_CLEANUP_ON_FAIL`.
-
----
-
 ## `ranger-yarn-all-queue-users-add.sh`
 
 - **Goal:** add UNIX users to the Ranger YARN policy **`all - queue`** (override **`RANGER_POLICY_NAME`**) by **GET → merge → PUT** so you do not hardcode policy id, guid, or service name in curl.
@@ -380,6 +497,283 @@ RANGER_BASE_URL=http://ranger-host:6080 RANGER_YARN_SERVICE_NAME=mycluster_yarn 
 ```
 
 **Env:** `AMBARI_*`, `CLUSTER_NAME`, `RANGER_ENV_FILE` (alias: `RANGER_CONFIG_FILE`), `RANGER_PASSWORD_FILE`, `RANGER_BASE_URL`, `RANGER_USER`, `RANGER_PASSWORD`, `RANGER_YARN_SERVICE_NAME`, `RANGER_POLICY_NAME`, `RANGER_POLICY_ID`, `RANGER_ADD_USERS`, `RANGER_DRY_RUN`, `CURL_EXTRA_OPTS` (e.g. **`-k`** for TLS). Prefer **`configs/ranger.env`** (see **`configs/ranger.env.example`**) instead of exporting **`RANGER_PASSWORD`** on the shell.
+
+---
+
+## `ranger-plugin-connection-smoke.sh`
+
+- **Goal:** run Ranger Admin **Test Connection** for every **enabled** Ranger service (plugin repository), same as the UI button.
+- **API:** `GET /service/public/v2/api/service` then `POST /service/plugins/services/validateConfig` with each service JSON.
+- **Ranger URL / auth:** same **`configs/ranger.env`** + optional Ambari discovery as the YARN policy script (`RANGER_BASE_URL` / `RANGER_USER` / `RANGER_PASSWORD`).
+- Prints a **PASS / FAIL / SKIP** summary. Exits **1** if any tested service fails (`RANGER_FAIL_ON_ERROR=1`, default).
+
+```bash
+cp configs/ranger.env.example configs/ranger.env   # set RANGER_PASSWORD (and optional RANGER_BASE_URL)
+./ranger-plugin-connection-smoke.sh
+
+# Only HDFS/YARN/Hive, or skip known-broken types:
+RANGER_SERVICE_TYPES=hdfs,yarn,hive ./ranger-plugin-connection-smoke.sh
+RANGER_SKIP_TYPES=knox,kms ./ranger-plugin-connection-smoke.sh
+```
+
+**Env:** `RANGER_INCLUDE_DISABLED`, `RANGER_SERVICE_TYPES`, `RANGER_SKIP_TYPES`, `RANGER_SKIP_SERVICES`, `RANGER_TIMEOUT_SECONDS`, `RANGER_FAIL_ON_ERROR`, plus shared Ranger/Ambari vars above.
+
+---
+
+## `zeppelin-editors-smoke.sh`
+
+- **Goal:** smoke every **supported Zeppelin editor / interpreter** discovered from `GET /api/interpreter` (e.g. `%md.md`, `%sh.sh`, `%livy.spark`, `%jdbc.sql`, `%angular.angular`).
+- Creates a temporary note, runs one sample paragraph per editor via synchronous `POST /api/notebook/run/{noteId}/{paragraphId}`, prints **PASS / FAIL / SKIP**, deletes the note.
+- **Auth / URL:** `configs/zeppelin.env` (`ZEPPELIN_USER` / `ZEPPELIN_PASSWORD`), optional **`ZEPPELIN_BASE_URL`**, else Ambari discovery of **`ZEPPELIN_MASTER`** + `zeppelin.server.port`.
+
+```bash
+cp configs/zeppelin.env.example configs/zeppelin.env   # set password if needed
+./zeppelin-editors-smoke.sh
+
+# Subset:
+ZEPPELIN_ONLY_GROUPS=md,sh,angular ./zeppelin-editors-smoke.sh
+ZEPPELIN_SKIP_GROUPS=livy,jdbc ./zeppelin-editors-smoke.sh
+```
+
+**Env:** `ZEPPELIN_ENV_FILE`, `ZEPPELIN_BASE_URL`, `ZEPPELIN_USER`, `ZEPPELIN_PASSWORD`, `ZEPPELIN_ONLY_GROUPS`, `ZEPPELIN_SKIP_GROUPS`, `ZEPPELIN_ONLY_INTERPS`, `ZEPPELIN_SKIP_INTERPS`, `ZEPPELIN_TIMEOUT_SECONDS`, `ZEPPELIN_FAIL_ON_ERROR`, `ZEPPELIN_KEEP_NOTE`, Ambari vars when URL is discovered.
+
+---
+
+## `airflow-sample-smoke.sh`
+
+- **Goal:** Airflow web **health** (`/api/v1/health`) plus trigger sample DAG **`odp_airflow_smoke`** (BashOperator `echo OK_AIRFLOW_SMOKE`) to **`success`**.
+- Installs `airflow/odp_airflow_smoke_dag.py` into **`$AIRFLOW_HOME/dags`**, unpauses, triggers, polls `airflow dags list-runs`.
+- **Auth / URL:** optional **`kinit`** as **`airflow-<cluster>`**; **`AIRFLOW_BASE_URL`** or Ambari **`AIRFLOW_WEBSERVER`** discovery (default port **8889**).
+
+```bash
+sudo ./airflow-sample-smoke.sh
+
+# Skip Kerberos:
+AIRFLOW_SKIP_KINIT=1 AIRFLOW_BASE_URL=http://o2009c11:8889 sudo -E ./airflow-sample-smoke.sh
+```
+
+**Env:** `AIRFLOW_HOME`, `AIRFLOW_BASE_URL`, `AIRFLOW_DAG_ID`, `AIRFLOW_DAG_FILE`, `AIRFLOW_TIMEOUT_SECONDS`, `AIRFLOW_SKIP_KINIT`, `AIRFLOW_KEYTAB`, `AIRFLOW_KEEP_DAG_FILE`, Ambari vars.
+
+---
+
+## `clickhouse-sample-smoke.sh`
+
+- **Goal:** ClickHouse HTTP smoke: `SELECT version()`, create DB/table, insert 3 rows, verify `count()` and data, then drop DB.
+- Optional **`CLICKHOUSE_USE_CLIENT=1`** also runs a native TCP client check (`clickhouse client`, port default **9001**).
+- **URL:** **`CLICKHOUSE_HTTP_URL`** or Ambari **`CLICKHOUSE_SERVER`** + `http_port` (default **8123**).
+
+```bash
+./clickhouse-sample-smoke.sh
+
+# Also exercise native client:
+CLICKHOUSE_USE_CLIENT=1 ./clickhouse-sample-smoke.sh
+```
+
+**Env:** `CLICKHOUSE_HTTP_URL`, `CLICKHOUSE_HOST`, `CLICKHOUSE_HTTP_PORT`, `CLICKHOUSE_TCP_PORT`, `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DATABASE`, `CLICKHOUSE_TABLE`, `CLICKHOUSE_KEEP_DB`, `CLICKHOUSE_SKIP_KINIT`, `CLICKHOUSE_USE_CLIENT`, `CLICKHOUSE_CLIENT`, Ambari vars.
+
+---
+
+## `druid-sample-smoke.sh`
+
+- **Goal:** Druid role **health**, Kerberos **SQL `SELECT 1`**, then optional **inline `index_parallel` ingest** of `odp_druid_smoke` and **`COUNT(*)=3`**.
+- Discovers Broker / Coordinator / Overlord / Router / Historical / MiddleManager from Ambari (ports from `druid-*-site`, e.g. coordinator **9081**, router **9888**).
+- Spec: `druid/odp_druid_smoke_index.json`.
+
+```bash
+sudo ./druid-sample-smoke.sh
+
+# Health + SQL only:
+DRUID_SKIP_INGEST=1 sudo -E ./druid-sample-smoke.sh
+```
+
+**Env:** `DRUID_BROKER_URL`, `DRUID_COORDINATOR_URL`, `DRUID_OVERLORD_URL`, `DRUID_ROUTER_URL`, `DRUID_KEYTAB`, `DRUID_SKIP_KINIT`, `DRUID_SKIP_INGEST`, `DRUID_DATASOURCE`, `DRUID_TIMEOUT_SECONDS`, `DRUID_KEEP_DATASOURCE`, Ambari vars.
+
+---
+
+## `ozone-sample-smoke.sh`
+
+- **HA roles:** `ozone admin om roles --service-id=<id>` and `ozone admin scm roles`.
+- **Web endpoints:** SPNEGO `GET` on every OM, SCM and S3 Gateway host from Ambari, plus Recon `/` and `/api/v1/clusterState`.
+- **Data path:** `volume create` / `volume info`, `bucket create` / `bucket info`, `key put`, `key list`, `key info`, `key get` with a byte-for-byte content compare, `ozone fs -ls ofs://<service-id>/...`, then `key delete`.
+- **Cleanup:** `bucket delete -r -y` then `volume delete`. The `-r` matters because `key delete` moves the key into the bucket trash rather than removing it, so a plain `bucket delete` fails with `BUCKET_NOT_EMPTY`.
+- Prints a PASS/FAIL/SKIPPED summary and exits non-zero on any failure.
+
+```bash
+sudo ./ozone-sample-smoke.sh
+
+# Data path only:
+OZONE_SKIP_HTTP=1 sudo -E ./ozone-sample-smoke.sh
+
+# Leave the smoke volume behind for inspection:
+OZONE_KEEP_DATA=1 sudo -E ./ozone-sample-smoke.sh
+```
+
+### Notes
+
+- **`JAVA_HOME`:** the ODP `ozone` wrapper fails with `JAVA_HOME is not set` under a bare `sudo`. The script resolves it from the ambari-agent command JSON, then `/usr/lib/jvm`, then `java` on `PATH`.
+- **`OZONE_CONF_DIR`:** ODP ships an empty shared `/etc/hadoop-ozone/conf/ozone-site.xml`, so the CLI cannot resolve the OM service id from it. The script picks the first per-role directory (`ozone.om`, `ozone.scm`, ...) that actually declares `ozone.om.service.ids`.
+- **Kerberos:** `/etc/security/keytabs/ozone.headless.keytab` normally holds `hdfs-<cluster>`, which is also in `ozone.administrators`. Falls back to `hdfs.headless.keytab`.
+
+**Env:** `OZONE_CONF_DIR`, `OZONE_BIN`, `JAVA_HOME`, `OZONE_KEYTAB`, `OZONE_PRINCIPAL`, `OZONE_SKIP_KINIT`, `OZONE_SERVICE_ID`, `OZONE_VOLUME`, `OZONE_BUCKET`, `OZONE_KEY`, `OZONE_KEEP_DATA`, `OZONE_SKIP_HTTP`, `OZONE_SKIP_FS`, `CURL_EXTRA_OPTS`, Ambari vars.
+
+---
+
+## `nifi-sample-smoke.sh`
+
+- Discovers the `NIFI_MASTER` host from Ambari, plus the port and TLS flag (`nifi.node.ssl.isenabled` picks `nifi.node.ssl.port` over `nifi.node.port`).
+- **Status:** `/flow/about`, `/system-diagnostics` (heap), `/flow/status` (active threads), `/controller/cluster` (fails if any node is not `CONNECTED`), `/flow/processor-types`.
+- **Write path:** creates a process group under root, adds a `GenerateFlowFile` processor, confirms it appears in the group's flow, then deletes the group. Deleting the group removes the processor with it, so cleanup only needs the group id.
+
+```bash
+./nifi-sample-smoke.sh
+
+# Status endpoints only:
+NIFI_SKIP_WRITE=1 ./nifi-sample-smoke.sh
+```
+
+**Env:** `NIFI_URL`, `NIFI_SKIP_KINIT`, `NIFI_KEYTAB`, `NIFI_PRINCIPAL`, `NIFI_SKIP_WRITE`, `NIFI_PG_NAME`, `NIFI_PROCESSOR_TYPE`, `NIFI_KEEP_FLOW`, `CURL_EXTRA_OPTS`, Ambari vars.
+
+---
+
+## `nifi-registry-sample-smoke.sh`
+
+- Discovers the `NIFI_REGISTRY_MASTER` host, port and TLS flag from Ambari the same way.
+- **Status:** `/about`, `/access` (reports the resolved identity), `/buckets`.
+- **Write path:** create a bucket, read it back by id, create a flow in it, confirm the flow appears in the bucket listing, then delete the flow and the bucket. Both deletes pass the current `revision.version` as the `version` query parameter.
+
+```bash
+./nifi-registry-sample-smoke.sh
+
+# Status endpoints only:
+NIFI_REGISTRY_SKIP_WRITE=1 ./nifi-registry-sample-smoke.sh
+```
+
+**Env:** `NIFI_REGISTRY_URL`, `NIFI_REGISTRY_SKIP_KINIT`, `NIFI_REGISTRY_KEYTAB`, `NIFI_REGISTRY_PRINCIPAL`, `NIFI_REGISTRY_SKIP_WRITE`, `NIFI_REGISTRY_BUCKET`, `NIFI_REGISTRY_FLOW`, `NIFI_REGISTRY_KEEP_DATA`, `CURL_EXTRA_OPTS`, Ambari vars.
+
+### Notes for both
+
+- **Auth:** with TLS off (the ODP default here) NiFi runs `nifi.security.allow.anonymous.authentication=true` and rejects user authentication over plain HTTP with `409 User authentication/authorization is only supported when running over HTTPS`. The scripts therefore only add `--negotiate -u :` when the resolved URL is `https`, and `*_SKIP_KINIT` defaults to `1`.
+- **JSON parsing:** NiFi embeds raw control characters in some component descriptions, so every response is parsed with Python's `strict=False`.
+
+---
+
+## `jupyterhub-sample-smoke.sh`
+
+- Discovers everything from Ambari's `JUPYTER` service: the `JUPYTERHUB` host, `port`, `enable_ssl`, `initial_admin`, `dummy_password`, and `c.JupyterHub.base_url` parsed out of the rendered `jupyterhub_config.py`.
+- **Unauthenticated:** `<base>/hub/api` (version), `<base>/hub/health`, `<base>/hub/login`.
+- **Authenticated:** form login, then `/hub/api/user` (identity + admin flag), `/hub/api/info` (spawner and authenticator class), `/hub/api/users`.
+- **Single-user server:** spawn via `POST /hub/api/users/<user>/server`, poll until `ready`, query the notebook server's `/api` (version) and `/api/kernelspecs` (default kernel), then stop it. A cleanup trap stops the server even if a check fails.
+
+```bash
+./jupyterhub-sample-smoke.sh
+
+# Skip the spawn cycle:
+JUPYTERHUB_SKIP_SPAWN=1 ./jupyterhub-sample-smoke.sh
+```
+
+### Notes
+
+- **`base_url`:** JupyterHub is often mounted under a prefix (`/lab` here). Every path is built from it, and without it each request lands on the hub's 404 page. Override with `JUPYTERHUB_BASE_URL`.
+- **XSRF, two scopes:** the `_xsrf` cookie is scoped per path. Hub API calls need the token from `<base>/hub/`, the single-user server needs the one from `<base>/user/<name>/`. Sending the wrong one returns `403`.
+- **XSRF rotation:** logging in rotates `_xsrf`, but only an HTML handler reissues the cookie - the JSON API never does. The script fetches `<base>/hub/home` right after login, otherwise every later `POST` fails with `XSRF cookie does not match POST argument`.
+- **Login redirect:** the login `POST` answers `302`. Redirects are not followed, because curl would replay the `POST` against the redirect target and get a `403`.
+
+**Env:** `JUPYTERHUB_URL`, `JUPYTERHUB_BASE_URL`, `JUPYTERHUB_USER`, `JUPYTERHUB_PASSWORD`, `JUPYTERHUB_SKIP_SPAWN`, `JUPYTERHUB_KEEP_SERVER`, `JUPYTERHUB_SPAWN_TIMEOUT`, `JUPYTERHUB_POLL_SECONDS`, `CURL_EXTRA_OPTS`, Ambari vars.
+
+---
+
+## `knox-sample-smoke.sh`
+
+- Discovers the `KNOX_GATEWAY` host plus `gateway.port` and `gateway.path` from Ambari, and reads the topology's LDAP realm URL and the demo `users-ldif` credentials from the same config.
+- **Reachability:** gateway port, TLS handshake, and the certificate's validity window (`openssl x509 -checkend 0`). Knox ships a self-signed certificate, so `CURL_EXTRA_OPTS` defaults to `-k`.
+- **Topology deployment:** one request per topology (`admin`, `default`, `knoxsso`, `manager`, `homepage`, `metadata`). `200`/`302`/`401` means deployed; `404` means it never deployed and `5xx` that deployment failed.
+- **Auth enforcement:** an unauthenticated admin API call must return `401` with a `WWW-Authenticate` header, which confirms the authentication provider is active.
+- **Authenticated:** `/admin/api/v1/version`, `/admin/api/v1/topologies` (prints the deployed set as Knox sees it), and a `webhdfs/v1/?op=LISTSTATUS` through the gateway to prove the proxy path to a backend works.
+
+```bash
+./knox-sample-smoke.sh
+
+# Unauthenticated checks only:
+KNOX_SKIP_AUTH=1 ./knox-sample-smoke.sh
+```
+
+### Notes
+
+- **Topology probes must hit a real service.** Knox only routes paths a topology declares, so `/gateway/default/zzz` returns the same `404` as a topology that was never deployed. `KNOX_TOPOLOGY_PROBES` is therefore a list of `<topology>=<service-path>` pairs rather than bare topology names.
+- **Demo LDAP.** On a stock ODP install the `default` topology authenticates through `ShiroProvider` against the Knox demo LDAP on port `33389`. That LDAP is not started automatically, and while it is down Knox answers `401` for every credential. The script probes the realm URL to tell this apart from a wrong password: store unreachable is reported **SKIPPED** with the reason, a reachable store rejecting the login is a **FAIL**. Start it from Ambari under Knox > Actions > Start Demo LDAP.
+- **Ranger.** The Knox plugin is enabled here, so a `403` on an authenticated call is an authorization decision rather than a gateway problem - check the `knox` service policies in Ranger.
+
+**Env:** `KNOX_URL`, `KNOX_TOPOLOGY_PROBES`, `KNOX_USER`, `KNOX_PASSWORD`, `KNOX_LDAP_URL`, `KNOX_SKIP_AUTH`, `KNOX_SKIP_WEBHDFS`, `KNOX_WEBHDFS_TOPOLOGY`, `CURL_EXTRA_OPTS`, Ambari vars.
+
+---
+
+## `zookeeper-sample-smoke.sh`
+
+Checks that the ensemble is a healthy quorum rather than three processes that merely accept connections. The highest-value failure it catches is a missing or duplicated leader, so the role assertion is deliberately strict.
+
+- Discovers the `ZOOKEEPER_SERVER` and `ZOOKEEPER_CLIENT` hosts from Ambari, and `clientPort`, `admin.serverPort`, `admin.enableServer`, `4lw.commands.whitelist`, `dataDir` and the `tickTime` / `initLimit` / `syncLimit` triple from the rendered `zoo.cfg` (falling back to Ambari's `zoo.cfg` type). Also reports `authProvider.1`, `requireClientAuthScheme`, `jaasLoginRenew`, `zk_user` and the keytab and principal from `zookeeper-env`.
+- **Liveness:** the client port is open on every server and the `ruok` four-letter word answers exactly `imok`.
+- **Quorum roles:** `srvr` on each server, parsing `Mode:`. Exactly one `leader` and every other live server a `follower` (`observer` peers are excluded from the follower count, and a single-server `standalone` ensemble counts as the leader). No leader is reported as a lost quorum, more than one as a split ensemble.
+- **Membership:** `conf` reports the `server.N` list the process is actually running with, compared against the Ambari host list on short hostnames. This catches a `ZOOKEEPER_SERVER` that was added in Ambari but never pushed to `zoo.cfg`.
+- **Metrics:** `mntr` per server for `zk_num_alive_connections`, `zk_znode_count` and `zk_watch_count`, plus `zk_followers` / `zk_synced_followers` on the leader. `zk_synced_followers` must equal the number of followers the role check found - a follower that is up but not syncing shows here and nowhere else.
+- **Replica consistency:** `zk_znode_count` across all servers must fall within `ZOOKEEPER_ZNODE_COUNT_TOLERANCE` (default `25`). The servers are sampled one after another on a live cluster, so an exact match is not required.
+- **AdminServer:** `GET /commands/ruok` on each server, asserting the JSON has `"error": null`.
+- **Data path:** against the full connection string, `create` a `/odp_zk_smoke_<timestamp>` znode with a known value, `get` it back and compare, `set` a second value and re-`get`, `ls /` to confirm it is listed, then `delete` it and confirm the re-read raises `NoNodeException`. A cleanup trap removes the znode even if a check fails.
+- **Service znodes:** prints the top-level listing and which well-known service znodes (`hbase-secure`, `infra-solr`, `brokers`, `hiveserver2`, `rmstore`, ...) are present. Set `ZOOKEEPER_EXPECTED_ZNODES` to turn that into a hard check.
+
+```bash
+sudo ./zookeeper-sample-smoke.sh
+
+# Ensemble health only, no client:
+ZOOKEEPER_SKIP_CLI=1 sudo -E ./zookeeper-sample-smoke.sh
+
+# Require the znodes other services depend on:
+ZOOKEEPER_EXPECTED_ZNODES="/hbase-secure /infra-solr /brokers /hiveserver2 /rmstore" sudo -E ./zookeeper-sample-smoke.sh
+```
+
+### Notes
+
+- **The Kerberos half of `zoo.cfg` is not in Ambari.** `authProvider.1`, `jaasLoginRenew` and `kerberos.removeHostFromPrincipal` are injected by the stack when security is enabled and never appear in Ambari's `zoo.cfg` config type, so reading only Ambari makes a Kerberized ensemble look unauthenticated. The script prefers the rendered `/usr/odp/current/zookeeper-server/conf/zoo.cfg` and falls back to Ambari for hosts with no ZooKeeper package.
+- **SASL is accepted but not required here.** `authProvider.1` is the `SASLAuthenticationProvider`, but `requireClientAuthScheme` is unset and `/` carries `world:anyone:cdrwa`, so an unauthenticated client can still create and read znodes under the root. The shipped `zookeeper_client_jaas.conf` uses `useTicketCache=true`, so the CLI wants a ticket in the cache but only downgrades to an anonymous session without one - a missing keytab is therefore **SKIPPED**, not **FAIL**. The default login is `ambari-qa-<cluster>` from `smokeuser.headless.keytab`; `zk.service.keytab` only holds `zookeeper/<FQDN>` and is a server identity.
+- **`admin.serverPort`.** ZooKeeper's AdminServer defaults to `8080`, which collides with Ambari, so ODP moves it (`8081` here). The script reads the port from config rather than assuming. Nothing listening is **SKIPPED**; something listening that does not answer the AdminServer contract is a **FAIL** - note that an unrelated JVM on the port will correctly fail this check.
+- **`4lw.commands.whitelist`.** ODP sets it to `*`, but on a locked-down cluster a command that is not whitelisted still replies, with a refusal string rather than a connection error. Both the config value and that refusal text are checked, and an unavailable command is **SKIPPED** with the reason. Pin the list with `ZOOKEEPER_4LW_WHITELIST` when running somewhere the config cannot be read.
+- **`zkCli.sh` output is unreliable.** It prints its banner, the log4j appender and the watcher events onto the same stream as the result, and it exits `0` for several server-side errors. Every assertion is made on the filtered text - the returned value, `Created <path>`, `NoNodeException` - and never on the exit code.
+- **`JAVA_HOME`:** same problem as the Ozone wrapper under a bare `sudo`; resolved from the ambari-agent command JSON, then `/usr/lib/jvm`, then `java` on `PATH`.
+
+**Env:** `ZOOKEEPER_HOSTS`, `ZOOKEEPER_CLIENT_PORT`, `ZOOKEEPER_CONNECT`, `ZOOKEEPER_4LW_WHITELIST`, `ZOOKEEPER_ADMIN_PORT`, `ZOOKEEPER_SKIP_ADMIN`, `ZOOKEEPER_SKIP_CLI`, `ZOOKEEPER_SKIP_KINIT`, `ZOOKEEPER_KEYTAB`, `ZOOKEEPER_PRINCIPAL`, `ZOOKEEPER_CLI_BIN`, `JAVA_HOME`, `ZOOKEEPER_ZNODE`, `ZOOKEEPER_KEEP_ZNODE`, `ZOOKEEPER_EXPECTED_ZNODES`, `ZOOKEEPER_ZNODE_COUNT_TOLERANCE`, `ZOOKEEPER_4LW_TIMEOUT`, `ZOOKEEPER_CLI_TIMEOUT`, `CURL_EXTRA_OPTS`, Ambari vars.
+
+---
+
+## `infra-solr-sample-smoke.sh`
+
+Checks that the SolrCloud behind `AMBARI_INFRA_SOLR` is up, that its cluster state is clean, and that a collection can be created, indexed into, queried and dropped.
+
+- Discovers the `INFRA_SOLR` hosts from Ambari plus `infra_solr_port`, `infra_solr_ssl_enabled`, `infra_solr_znode` and `infra_solr_kerberos_keytab` from `infra-solr-env`.
+- **Kerberos:** the HTTP endpoints run SPNEGO, so every call goes out with `--negotiate -u :` after a `kinit` with the Infra Solr service keytab.
+- **Per-host liveness:** `/solr/admin/info/system` on every `INFRA_SOLR` host, reporting the Solr version and mode, and asserting that the reported `zkHost` ends with the discovered znode.
+- **Cluster status:** `action=CLUSTERSTATUS` - the live node count must equal the number of `INFRA_SOLR` hosts, and every shard and every replica of every collection must be `active` and sitting on a live node.
+- **Listings:** `action=LIST` for collections and `/solr/admin/configs?action=LIST` for configsets.
+- **Write path:** `action=CREATE` (`numShards=1`, `replicationFactor=1`) against the `_default` configset, index `INFRA_SOLR_DOC_COUNT` documents with a commit, query them back and assert `numFound`, then `action=DELETE`. A cleanup trap drops the collection even if a check fails.
+
+```bash
+sudo ./infra-solr-sample-smoke.sh
+
+# Read-only checks:
+INFRA_SOLR_SKIP_WRITE=1 sudo -E ./infra-solr-sample-smoke.sh
+
+# Leave the smoke collection behind for inspection:
+INFRA_SOLR_KEEP_COLLECTION=1 sudo -E ./infra-solr-sample-smoke.sh
+```
+
+### Notes
+
+- **Run as root.** `/etc/security/keytabs/ambari-infra-solr.service.keytab` is mode `0400` owned by `infra-solr`. Without it every endpoint answers `401 Authentication required`, and the script says so and reports the affected checks **SKIPPED**.
+- **Principal comes from the keytab.** Ambari only stores the `_HOST` template (`infra-solr/_HOST@REALM`), which `kinit` will not expand, and the keytab holds host-scoped entries. The script reads the entry matching the local hostname out of `klist -kt`.
+- **`admin` cannot read.** `security.json` grants the Solr `read` permission to the `dev` role only, and `infra-solr@REALM` maps to `admin` alone. That identity can create a collection, index into it and drop it, but `/select` answers `403`. For the read-back the script `kinit`s a second identity from `INFRA_SOLR_READ_CANDIDATES` (`rangeradmin`, `logsearch`, `atlas` - the stock members of `dev`); if none of those keytabs is readable the query is **SKIPPED** rather than FAIL, because it is an authorization policy and not a Solr fault. `update` has no permission entry at all, so indexing is open to any authenticated user.
+- **Query the node that hosts the replica.** A request for a collection whose replica lives on another node is proxied there, and the proxied hop re-authenticates as the Solr node identity (`infra-solr`, role `admin`) instead of the caller - so `/select` intermittently returned `403` depending on where `CREATE` happened to place the replica. The script reads the replica's `base_url` out of `CLUSTERSTATUS` and sends the update and the query straight to it.
+- **Configset.** `_default` is picked when the cluster lists it, since its managed schema accepts arbitrary fields (Solr warns that data-driven schemas are not for production, which is fine for a throwaway collection). Otherwise the first configset is used, and with no configsets at all the whole write path is **SKIPPED**.
+
+**Env:** `INFRA_SOLR_ENV_FILE`, `INFRA_SOLR_HOSTS`, `INFRA_SOLR_PORT`, `INFRA_SOLR_SSL`, `INFRA_SOLR_ZNODE`, `INFRA_SOLR_KEYTAB`, `INFRA_SOLR_PRINCIPAL`, `INFRA_SOLR_SKIP_KINIT`, `INFRA_SOLR_READ_KEYTAB`, `INFRA_SOLR_READ_PRINCIPAL`, `INFRA_SOLR_READ_CANDIDATES`, `INFRA_SOLR_SKIP_WRITE`, `INFRA_SOLR_COLLECTION`, `INFRA_SOLR_CONFIGSET`, `INFRA_SOLR_DOC_COUNT`, `INFRA_SOLR_KEEP_COLLECTION`, `CURL_EXTRA_OPTS`, Ambari vars.
 
 ---
 
@@ -410,6 +804,12 @@ sample-jobs/
     client-sasl.properties
   hbase/
     hbase-sample-smoke.hbase
+  oozie/
+    shell/workflow.xml
+    hive/workflow.xml
+    hive/hive_smoke.hql
+  druid/
+    odp_druid_smoke_index.json
   sql/
     hive-sample-smoke.sql
     hive-spark2-compat-*.sql

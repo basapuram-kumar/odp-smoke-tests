@@ -1,17 +1,31 @@
 #!/usr/bin/env bash
 #
-# Sqoop smoke: MySQL → HDFS import (default), optional export + row-count verify.
+# Sqoop smoke: MySQL -> HDFS import (default), optional export + row-count verify.
 # Run from a Hadoop gateway / edge node where `sqoop` and `hdfs` use the live cluster.
 #
-# Prerequisites (on MySQL, once as admin):
+# Auth (Kerberos, same pattern as hdfs/yarn smokes):
+#   Resolve CLUSTER_NAME from Ambari (or env), then kinit as hdfs-<cluster> with the HDFS
+#   headless keytab before import/export. Set SQOOP_SKIP_KINIT=1 to skip (non-Kerberos or
+#   when a usable ticket is already present).
+#
+# Prerequisites (on MySQL, once as admin - or set SQOOP_MYSQL_SETUP=1):
 #   mysql -u root -p < sql/sqoop-smoke-mysql-setup.sql
 #   That creates database sqoop_smoke, user sqoop_smoke / password sqoop_smoke, table smoke_import
 #   with five rows (defaults in this script match that SQL).
 #
 # Environment:
-#   SQOOP_CONFIG_FILE       default: <script-dir>/configs/sqoop.env — optional KEY=value file (gitignored
-#                            copy: configs/sqoop.env.example → sqoop.env). Fills vars unset when the script
+#   SQOOP_CONFIG_FILE       default: <script-dir>/configs/sqoop.env - optional KEY=value file (gitignored
+#                            copy: configs/sqoop.env.example -> sqoop.env). Fills vars unset when the script
 #                            started (before script defaults). Remove stale sqoop.env after upgrading.
+#   AMBARI_CONFIG_FILE      default: <script-dir>/configs/ambari.env (cluster name for kinit)
+#   AMBARI_BASE_URL, AMBARI_USER, AMBARI_PASSWORD
+#   CLUSTER_NAME            If set, skip Ambari lookup
+#   HDFS_KEYTAB             default: /etc/security/keytabs/hdfs.headless.keytab
+#   SQOOP_SKIP_KINIT        default: 0 - set 1 to skip Ambari + kinit
+#   SQOOP_MYSQL_SETUP       default: 0 - set 1 to apply sql/sqoop-smoke-mysql-setup.sql as MySQL root
+#   SQOOP_MYSQL_SETUP_SQL   default: <script-dir>/sql/sqoop-smoke-mysql-setup.sql
+#   SQOOP_MYSQL_ROOT_USER   default: root (used only when SQOOP_MYSQL_SETUP=1)
+#   SQOOP_MYSQL_ROOT_PASSWORD  optional; if unset, mysql root uses socket/auth plugin defaults
 #   SQOOP_MYSQL_HOST        default: this host's name (hostname -f, else hostname).
 #   SQOOP_MYSQL_PORT        default: 3306
 #   SQOOP_MYSQL_DATABASE    default: sqoop_smoke
@@ -27,7 +41,7 @@
 #   SQOOP_IMPORT_COLUMNS       optional: comma-separated for --columns on import
 #   SQOOP_EXPORT_COLUMNS       optional: comma-separated for --columns on export
 #   SQOOP_DELETE_TARGET_DIR   default: 1 (pass --delete-target-dir on import)
-#   SQOOP_SKIP_EXPORT          default: 1 — import + HDFS checks only. Set 0 for export round-trip.
+#   SQOOP_SKIP_EXPORT          default: 1 - import + HDFS checks only. Set 0 for export round-trip.
 #   SQOOP_SKIP_IMPORT          if 1, only run export + optional verify (HDFS dir must exist)
 #   SQOOP_EXPECTED_ROWS        if set, import line count must match (e.g. 5 after stock setup SQL)
 #   SQOOP_MYSQL_VERIFY         default: 0. Set 1 with SQOOP_SKIP_EXPORT=0 to compare source vs export counts.
@@ -38,6 +52,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SQOOP_CONFIG_FILE="${SQOOP_CONFIG_FILE:-$SCRIPT_DIR/configs/sqoop.env}"
+AMBARI_CONFIG_FILE="${AMBARI_CONFIG_FILE:-${SCRIPT_DIR}/configs/ambari.env}"
 
 strip_quotes() {
   local v="$1"
@@ -88,9 +103,114 @@ load_sqoop_env_file_if_present() {
       SQOOP_TRUNCATE_EXPORT) [[ "${SQOOP_TRUNCATE_EXPORT+set}" == "set" ]] || SQOOP_TRUNCATE_EXPORT="$val" ;;
       SQOOP_IMPORT_COLUMNS) [[ "${SQOOP_IMPORT_COLUMNS+set}" == "set" ]] || SQOOP_IMPORT_COLUMNS="$val" ;;
       SQOOP_EXPORT_COLUMNS) [[ "${SQOOP_EXPORT_COLUMNS+set}" == "set" ]] || SQOOP_EXPORT_COLUMNS="$val" ;;
+      SQOOP_SKIP_KINIT) [[ "${SQOOP_SKIP_KINIT+set}" == "set" ]] || SQOOP_SKIP_KINIT="$val" ;;
+      SQOOP_MYSQL_SETUP) [[ "${SQOOP_MYSQL_SETUP+set}" == "set" ]] || SQOOP_MYSQL_SETUP="$val" ;;
+      SQOOP_MYSQL_SETUP_SQL) [[ "${SQOOP_MYSQL_SETUP_SQL+set}" == "set" ]] || SQOOP_MYSQL_SETUP_SQL="$val" ;;
+      SQOOP_MYSQL_ROOT_USER) [[ "${SQOOP_MYSQL_ROOT_USER+set}" == "set" ]] || SQOOP_MYSQL_ROOT_USER="$val" ;;
+      SQOOP_MYSQL_ROOT_PASSWORD) [[ "${SQOOP_MYSQL_ROOT_PASSWORD+set}" == "set" ]] || SQOOP_MYSQL_ROOT_PASSWORD="$val" ;;
+      HDFS_KEYTAB) [[ "${HDFS_KEYTAB+set}" == "set" ]] || HDFS_KEYTAB="$val" ;;
+      CLUSTER_NAME) [[ "${CLUSTER_NAME+set}" == "set" ]] || CLUSTER_NAME="$val" ;;
+      AMBARI_BASE_URL) [[ "${AMBARI_BASE_URL+set}" == "set" ]] || AMBARI_BASE_URL="$val" ;;
+      AMBARI_USER) [[ "${AMBARI_USER+set}" == "set" ]] || AMBARI_USER="$val" ;;
+      AMBARI_PASSWORD) [[ "${AMBARI_PASSWORD+set}" == "set" ]] || AMBARI_PASSWORD="$val" ;;
     esac
   done <"$f"
   return 0
+}
+
+load_ambari_env_file() {
+  local f="$1" key val line
+  [[ -f "$f" ]] || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "${line//[[:space:]]/}" ]] && continue
+    line="${line#export[[:space:]]}"
+    [[ "$line" != *=* ]] && continue
+    key="${line%%=*}"
+    val="${line#*=}"
+    key="${key%"${key##*[![:space:]]}"}"
+    key="${key#"${key%%[![:space:]]*}"}"
+    val="${val%"${val##*[![:space:]]}"}"
+    val="${val#"${val%%[![:space:]]*}"}"
+    val="$(strip_quotes "$val")"
+    case "$key" in
+      AMBARI_BASE_URL) _cfg_AMBARI_BASE_URL="$val" ;;
+      AMBARI_USER) _cfg_AMBARI_USER="$val" ;;
+      AMBARI_PASSWORD) _cfg_AMBARI_PASSWORD="$val" ;;
+    esac
+  done <"$f"
+  return 0
+}
+
+resolve_cluster_and_kinit_hdfs() {
+  local cluster clusters_url json principal
+  _cfg_AMBARI_BASE_URL=""
+  _cfg_AMBARI_USER=""
+  _cfg_AMBARI_PASSWORD=""
+
+  need_cmd curl
+  need_cmd kinit
+  need_cmd python3
+
+  if [[ -n "${CLUSTER_NAME:-}" ]]; then
+    :
+  elif [[ -f "$AMBARI_CONFIG_FILE" ]]; then
+    load_ambari_env_file "$AMBARI_CONFIG_FILE" || die "failed to read $AMBARI_CONFIG_FILE"
+  elif [[ -n "${AMBARI_USER:-}" && -n "${AMBARI_PASSWORD:-}" ]]; then
+    :
+  else
+    die "Missing Ambari credentials. Create ${AMBARI_CONFIG_FILE} (copy from ${SCRIPT_DIR}/configs/ambari.env.example) or set AMBARI_USER and AMBARI_PASSWORD, or set CLUSTER_NAME / SQOOP_SKIP_KINIT=1."
+  fi
+
+  AMBARI_BASE_URL="${AMBARI_BASE_URL:-${_cfg_AMBARI_BASE_URL:-http://10.101.11.22:8080}}"
+  AMBARI_USER="${AMBARI_USER:-${_cfg_AMBARI_USER:-}}"
+  AMBARI_PASSWORD="${AMBARI_PASSWORD:-${_cfg_AMBARI_PASSWORD:-}}"
+
+  if [[ -z "${CLUSTER_NAME:-}" ]]; then
+    [[ -n "$AMBARI_USER" && -n "$AMBARI_PASSWORD" ]] || die "AMBARI_USER and AMBARI_PASSWORD must be set in ${AMBARI_CONFIG_FILE} or in the environment."
+  fi
+
+  [[ -r "$HDFS_KEYTAB" ]] || die "keytab not readable: $HDFS_KEYTAB"
+
+  if [[ -n "${CLUSTER_NAME:-}" ]]; then
+    cluster="$CLUSTER_NAME"
+  else
+    clusters_url="${AMBARI_BASE_URL%/}/api/v1/clusters/"
+    json="$(curl -sS -f -u "${AMBARI_USER}:${AMBARI_PASSWORD}" -H "X-Requested-By: ambari" "$clusters_url")" \
+      || die "failed to GET $clusters_url"
+    cluster="$(
+      printf '%s\n' "$json" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+items = data.get('items') or []
+if not items:
+    sys.exit('no clusters in Ambari response')
+name = (items[0].get('Clusters') or {}).get('cluster_name')
+if not name:
+    sys.exit('could not parse cluster_name from Ambari response')
+print(name)
+"
+    )" || die "could not parse cluster name from Ambari JSON"
+  fi
+
+  principal="hdfs-${cluster}"
+  echo "Using cluster: ${cluster}"
+  echo "kinit principal: ${principal} (realm from krb5.conf / keytab)"
+  kinit -kt "$HDFS_KEYTAB" "$principal" || die "kinit failed"
+}
+
+apply_mysql_setup_sql_if_requested() {
+  [[ "$SQOOP_MYSQL_SETUP" == "1" ]] || return 0
+  need_cmd "$SQOOP_MYSQL_CLIENT"
+  [[ -r "$SQOOP_MYSQL_SETUP_SQL" ]] || die "SQOOP_MYSQL_SETUP_SQL not readable: $SQOOP_MYSQL_SETUP_SQL"
+  echo "---- MySQL setup: $SQOOP_MYSQL_SETUP_SQL (as ${SQOOP_MYSQL_ROOT_USER}) ----"
+  if [[ -n "${SQOOP_MYSQL_ROOT_PASSWORD+set}" ]]; then
+    MYSQL_PWD="${SQOOP_MYSQL_ROOT_PASSWORD}" "$SQOOP_MYSQL_CLIENT" -u"$SQOOP_MYSQL_ROOT_USER" <"$SQOOP_MYSQL_SETUP_SQL" \
+      || die "MySQL setup failed"
+  else
+    "$SQOOP_MYSQL_CLIENT" -u"$SQOOP_MYSQL_ROOT_USER" <"$SQOOP_MYSQL_SETUP_SQL" \
+      || die "MySQL setup failed"
+  fi
 }
 
 load_sqoop_env_file_if_present "$SQOOP_CONFIG_FILE"
@@ -113,6 +233,11 @@ SQOOP_SKIP_IMPORT="${SQOOP_SKIP_IMPORT:-0}"
 SQOOP_MYSQL_VERIFY="${SQOOP_MYSQL_VERIFY:-0}"
 SQOOP_MYSQL_CLIENT="${SQOOP_MYSQL_CLIENT:-mysql}"
 SQOOP_TRUNCATE_EXPORT="${SQOOP_TRUNCATE_EXPORT:-0}"
+SQOOP_SKIP_KINIT="${SQOOP_SKIP_KINIT:-0}"
+SQOOP_MYSQL_SETUP="${SQOOP_MYSQL_SETUP:-0}"
+SQOOP_MYSQL_SETUP_SQL="${SQOOP_MYSQL_SETUP_SQL:-${SCRIPT_DIR}/sql/sqoop-smoke-mysql-setup.sql}"
+SQOOP_MYSQL_ROOT_USER="${SQOOP_MYSQL_ROOT_USER:-root}"
+HDFS_KEYTAB="${HDFS_KEYTAB:-/etc/security/keytabs/hdfs.headless.keytab}"
 
 die() {
   echo "ERROR: $*" >&2
@@ -189,9 +314,17 @@ if [[ "$SQOOP_MYSQL_USER" == "hive" && "$SQOOP_MYSQL_DATABASE" == "sqoop_test" &
   die "MySQL settings look stale: user=hive database=sqoop_test but sql/sqoop-smoke-mysql-setup.sql creates sqoop_smoke.smoke_import for user sqoop_smoke. Remove or edit ${SQOOP_CONFIG_FILE} (re-copy configs/sqoop.env.example), or export SQOOP_MYSQL_DATABASE=sqoop_smoke SQOOP_MYSQL_USER=sqoop_smoke SQOOP_MYSQL_PASSWORD=sqoop_smoke"
 fi
 
+if [[ "$SQOOP_SKIP_KINIT" == "1" ]]; then
+  echo "---- SQOOP_SKIP_KINIT=1 - skipping Ambari cluster lookup and hdfs kinit ----"
+else
+  resolve_cluster_and_kinit_hdfs
+fi
+
+apply_mysql_setup_sql_if_requested
+
 if [[ -z "${SQOOP_MYSQL_HOST:-}" ]]; then
   SQOOP_MYSQL_HOST="$(default_sqoop_mysql_host)"
-  echo "---- SQOOP_MYSQL_HOST unset — using this host: $SQOOP_MYSQL_HOST ----" >&2
+  echo "---- SQOOP_MYSQL_HOST unset - using this host: $SQOOP_MYSQL_HOST ----" >&2
 fi
 validate_mysql_password_file_if_set
 
@@ -254,7 +387,7 @@ else
 fi
 
 if [[ "${SQOOP_SKIP_EXPORT}" == "1" ]]; then
-  echo "---- SQOOP_SKIP_EXPORT=1 — done after import ----"
+  echo "---- SQOOP_SKIP_EXPORT=1 - done after import ----"
   exit 0
 fi
 
@@ -267,7 +400,7 @@ _exp+=(--export-dir "$TARGET_DIR" --input-fields-terminated-by "$SQOOP_FIELDS_TE
 "${_exp[@]}"
 
 if [[ "$SQOOP_MYSQL_VERIFY" != "1" ]]; then
-  echo "---- SQOOP_MYSQL_VERIFY=0 — skip DB count check ----"
+  echo "---- SQOOP_MYSQL_VERIFY=0 - skip DB count check ----"
   echo "Sqoop smoke finished OK."
   exit 0
 fi

@@ -1,0 +1,35 @@
+<workflow-app xmlns="uri:oozie:workflow:1.0" name="oozie-sample-smoke">
+    <start to="shell-node"/>
+    <action name="shell-node">
+        <shell xmlns="uri:oozie:shell-action:1.0">
+            <resource-manager>${resourceManager}</resource-manager>
+            <name-node>${nameNode}</name-node>
+            <configuration>
+                <property>
+                    <name>mapred.job.queue.name</name>
+                    <value>${queueName}</value>
+                </property>
+            </configuration>
+            <exec>echo</exec>
+            <argument>my_output=Hello Oozie</argument>
+            <capture-output/>
+        </shell>
+        <ok to="check-output"/>
+        <error to="fail"/>
+    </action>
+    <decision name="check-output">
+        <switch>
+            <case to="end">
+                ${wf:actionData('shell-node')['my_output'] eq 'Hello Oozie'}
+            </case>
+            <default to="fail-output"/>
+        </switch>
+    </decision>
+    <kill name="fail">
+        <message>Shell action failed, error message[${wf:errorMessage(wf:lastErrorNode())}]</message>
+    </kill>
+    <kill name="fail-output">
+        <message>Incorrect output, expected [Hello Oozie] but was [${wf:actionData('shell-node')['my_output']}]</message>
+    </kill>
+    <end name="end"/>
+</workflow-app>
