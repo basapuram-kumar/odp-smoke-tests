@@ -135,6 +135,7 @@ Copy from `configs/sqoop.env.example` if you need non-default JDBC host, user, o
 
 | Script | Principal / auth | Typical host |
 |--------|------------------|--------------|
+| `run-all-smoke.sh` | Runs the smoke entrypoints below and consolidates their results | Cluster node, as root |
 | `hdfs-headless-smoke.sh` | `hdfs-<cluster>` + hdfs headless keytab | Node with keytab |
 | `yarn-sample-smoke.sh` | Same as HDFS (`hdfs-<cluster>`) | YARN client / edge |
 | `hive-sample-smoke.sh` | `hive/<FQDN>` + Hive service keytab | HiveServer2 host |
@@ -168,6 +169,22 @@ Copy from `configs/sqoop.env.example` if you need non-default JDBC host, user, o
 | `zookeeper-sample-smoke.sh` | Four-letter words and AdminServer need no auth; the `zkCli.sh` data path uses the ticket cache (**`ambari-qa-<cluster>`** + smokeuser keytab) | Host that can reach `2181` on every **`ZOOKEEPER_SERVER`**, as root for the keytab |
 
 > **Note:** `yarn-sample-smoke.sh` uses the **HDFS headless** keytab and **`hdfs-<cluster>`** principal (not `yarn-ats-`). Override in the script or with env vars if your site differs.
+
+---
+
+## `run-all-smoke.sh`
+
+Run the master runner as root from this directory. It executes the smoke scripts in a stable order, streams each script's output, and prints one summary containing exit codes, elapsed time, and parsed `PASS` / `FAIL` / `SKIPPED` counts when available.
+
+```bash
+# From a root shell:
+./run-all-smoke.sh
+
+# Run a small subset by short name:
+SMOKE_ONLY=knox,ozone,zookeeper ./run-all-smoke.sh
+```
+
+Reports and per-script logs are written under `reports/smoke-YYYYMMDD-HHMMSS/`. Use `SMOKE_SKIP` to exclude scripts, `SMOKE_CONTINUE=0` to stop after the first failure, `SMOKE_REPORT_DIR` to choose another report directory, or `SMOKE_TIMEOUT_SECONDS` to set a per-script timeout. `SMOKE_SCRIPTS` is an alias for `SMOKE_ONLY`; lists may use commas or spaces and names may include or omit `.sh`.
 
 ---
 
@@ -295,7 +312,7 @@ sudo ./kudu-sample-smoke.sh
 ## `hbase-sample-smoke.sh`
 
 - Ambari + **`hbase-<cluster>`** + `/etc/security/keytabs/hbase.headless.keytab`.
-- Optional best-effort drop of `sample_table_1` / `sample_table_2`, then **`hbase shell -f`** `hbase/hbase-sample-smoke.hbase`.
+- Optional best-effort drop of `sample_table_1` / `sample_table_2`, then **`hbase shell -n`** with stdin from `hbase/hbase-sample-smoke.hbase` (noninteractive; always ends with `exit`).
 
 ```bash
 sudo ./hbase-sample-smoke.sh

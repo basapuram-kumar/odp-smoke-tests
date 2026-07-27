@@ -9,3 +9,4 @@ put 'sample_table_1', 'row2', 'cf:name', 'name_2'
 put 'sample_table_1', 'row2', 'cf:value', '200'
 
 scan 'sample_table_1'
+exit

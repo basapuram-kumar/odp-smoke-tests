@@ -14,6 +14,9 @@
 #   HBASE_SMOKE_SCRIPT      default <script-dir>/hbase/hbase-sample-smoke.hbase
 #   HBASE_SMOKE_DROP_FIRST  if "1" (default), best-effort disable/drop tables before create
 #
+# Always runs `hbase shell -n` (noninteractive). Commands are fed via stdin heredoc
+# or a script file; never rely on a TTY. Suitable under run-all-smoke.sh (tee / no TTY).
+#
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,9 +25,29 @@ HBASE_KEYTAB="${HBASE_KEYTAB:-/etc/security/keytabs/hbase.headless.keytab}"
 HBASE_SMOKE_SCRIPT="${HBASE_SMOKE_SCRIPT:-${SCRIPT_DIR}/hbase/hbase-sample-smoke.hbase}"
 HBASE_SMOKE_DROP_FIRST="${HBASE_SMOKE_DROP_FIRST:-1}"
 
+pass=0
+fail=0
+skip=0
+results=()
+
 die() {
   echo "ERROR: $*" >&2
   exit 1
+}
+
+record_pass() {
+  results+=("PASS: $1")
+  pass=$((pass + 1))
+}
+
+record_fail() {
+  results+=("FAIL: $1")
+  fail=$((fail + 1))
+}
+
+record_skip() {
+  results+=("SKIPPED: $1")
+  skip=$((skip + 1))
 }
 
 strip_quotes() {
@@ -64,6 +87,24 @@ load_ambari_env_file() {
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+# Run hbase shell noninteractively. Stdin must be a command stream (heredoc/file);
+# do not attach a TTY. Returns shell exit status; prints combined stdout/stderr.
+run_hbase_shell_n() {
+  # -n / --noninteractive: execute commands and exit (no REPL).
+  # stdin is already redirected by the caller (heredoc or file redirect).
+  hbase shell -n
+}
+
+hbase_output_looks_failed() {
+  local out="$1"
+  # Fail on real shell/Ruby errors; ignore best-effort TableNotFound during drop.
+  if printf '%s\n' "$out" | grep -Eqi \
+    'SyntaxError|NoMethodError|NameError|LoadError|org\.jruby\.|ERROR:[[:space:]]*Failed|ERROR:[[:space:]]*Unknown|FATAL|java\.lang\.(Exception|Error|RuntimeException)'; then
+    return 0
+  fi
+  return 1
 }
 
 need_cmd curl
@@ -131,18 +172,62 @@ echo "Using cluster: ${cluster}"
 echo "kinit principal: ${principal} (realm from krb5.conf / keytab)"
 
 kinit -kt "$HBASE_KEYTAB" "$principal" || die "kinit failed"
+record_pass "kinit ${principal}"
 
 if [[ "$HBASE_SMOKE_DROP_FIRST" == "1" ]]; then
-  echo "---- hbase shell (best-effort disable/drop sample_table_1/2) ----"
-  hbase shell <<'EOF' || true
+  echo "---- hbase shell -n (best-effort disable/drop sample_table_1/2) ----"
+  set +e
+  drop_out="$(
+    run_hbase_shell_n <<'EOF'
 disable 'sample_table_1'
 drop 'sample_table_1'
 disable 'sample_table_2'
 drop 'sample_table_2'
+exit
 EOF
+  )"
+  drop_rc=$?
+  set -e
+  printf '%s\n' "$drop_out"
+  # Best-effort: TableNotFound is expected on a clean cluster.
+  record_skip "best-effort drop sample_table_1/2 (rc=${drop_rc})"
+else
+  record_skip "best-effort drop (HBASE_SMOKE_DROP_FIRST!=1)"
 fi
 
-echo "---- hbase shell - ${HBASE_SMOKE_SCRIPT} ----"
-hbase shell "$HBASE_SMOKE_SCRIPT"
+echo "---- hbase shell -n < ${HBASE_SMOKE_SCRIPT} ----"
+set +e
+# Feed the script on stdin so this never depends on argv script loading or a TTY.
+# Append exit so the shell always terminates even if the file omits it.
+smoke_out="$(
+  {
+    cat "$HBASE_SMOKE_SCRIPT"
+    printf '\nexit\n'
+  } | run_hbase_shell_n
+)"
+smoke_rc=$?
+set -e
+printf '%s\n' "$smoke_out"
 
-echo "OK: HBase sample smoke finished."
+if (( smoke_rc != 0 )); then
+  record_fail "hbase shell -n sample script (exit=${smoke_rc})"
+elif hbase_output_looks_failed "$smoke_out"; then
+  record_fail "hbase shell -n sample script (error in output)"
+elif ! printf '%s\n' "$smoke_out" | grep -Fq "name_1"; then
+  # Scan should show put data; do not treat "Took X seconds" alone as success.
+  record_fail "hbase shell -n sample script (scan missing expected row data)"
+else
+  record_pass "hbase shell -n create/put/scan sample_table_1"
+fi
+
+echo ""
+echo "---- summary ----"
+for r in "${results[@]}"; do
+  echo "    $r"
+done
+echo "    PASS=${pass} FAIL=${fail} SKIPPED=${skip}"
+
+if (( fail > 0 )); then
+  die "HBase sample smoke had ${fail} failing check(s)."
+fi
+echo "OK: HBase sample smoke finished (PASS=${pass} SKIPPED=${skip})."
