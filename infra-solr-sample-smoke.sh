@@ -156,23 +156,84 @@ sys.exit(1)
 # The Infra Solr keytab holds host-scoped principals (<primary>/<fqdn>@REALM),
 # so the usable one depends on where the script runs. Ambari only stores the
 # _HOST template, which kinit will not expand.
+#
+# Do not assume the principal is field $4 of `klist -kt`: MIT krb5 varies the
+# timestamp layout by version and locale (optional timezone / weekday), which
+# shifts columns and used to yield an empty principal with a readable keytab.
 principal_from_keytab() {
-  local keytab="$1" fqdn short
+  local keytab="$1" fqdn short hosts_csv="$2"
   [[ -r "$keytab" ]] || return 1
+  command -v klist >/dev/null 2>&1 || return 1
   fqdn="$(hostname -f 2>/dev/null || hostname)"
   short="$(hostname -s 2>/dev/null || hostname)"
-  klist -kt "$keytab" 2>/dev/null | awk -v fqdn="$fqdn" -v short="$short" '
-    NF >= 4 && $4 ~ /@/ {
-      if (seen[$4]++) next
-      order[++n] = $4
-      if ($4 ~ "/" fqdn "@" && !exact) exact = $4
-      if ($4 ~ "/" short "@" && !partial) partial = $4
+  klist -kt "$keytab" 2>/dev/null | awk -v fqdn="$fqdn" -v short="$short" -v hosts="$hosts_csv" '
+    BEGIN {
+      n_hosts = split(hosts, host_list, /[ ,]+/)
+    }
+    {
+      for (i = 1; i <= NF; i++) {
+        p = $i
+        # Drop enctype parentheses some builds glue onto the principal token.
+        gsub(/^\(+/, "", p)
+        gsub(/\)+$/, "", p)
+        if (p !~ /@/) continue
+        if (seen[p]++) continue
+        order[++n] = p
+        if (index(p, "/" fqdn "@") && !exact) exact = p
+        if (index(p, "/" short "@") && !partial) partial = p
+      }
     }
     END {
-      if (exact) { print exact; exit }
-      if (partial) { print partial; exit }
-      if (n) { print order[1] }
+      if (exact) { print exact; exit 0 }
+      if (partial) { print partial; exit 0 }
+      for (h = 1; h <= n_hosts; h++) {
+        if (host_list[h] == "") continue
+        for (i = 1; i <= n; i++) {
+          if (index(order[i], "/" host_list[h] "@")) { print order[i]; exit 0 }
+        }
+      }
+      if (n) { print order[1]; exit 0 }
+      exit 1
     }'
+}
+
+# Expand Ambari's infra-solr/_HOST@REALM using local / Ambari host names, and
+# keep only a candidate that actually appears in the keytab.
+principal_from_ambari_template() {
+  local keytab="$1" tmpl host cand
+  [[ -r "$keytab" ]] || return 1
+  tmpl="$(solr_prop infra_solr_kerberos_principal 2>/dev/null || true)"
+  [[ -n "$tmpl" ]] || return 1
+  if [[ "$tmpl" != *_HOST* ]]; then
+    printf '%s' "$tmpl"
+    return 0
+  fi
+  for host in "$(hostname -f 2>/dev/null || true)" \
+              "$(hostname -s 2>/dev/null || true)" \
+              "$(hostname 2>/dev/null || true)" \
+              $INFRA_SOLR_HOSTS; do
+    [[ -n "$host" ]] || continue
+    cand="${tmpl//_HOST/$host}"
+    if klist -kt "$keytab" 2>/dev/null | grep -F -q -- "$cand"; then
+      printf '%s' "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+resolve_infra_solr_principal() {
+  local keytab="$1" p
+  p="$(principal_from_keytab "$keytab" "${INFRA_SOLR_HOSTS:-}" || true)"
+  [[ -n "$p" ]] && { printf '%s' "$p"; return 0; }
+  p="$(principal_from_ambari_template "$keytab" || true)"
+  [[ -n "$p" ]] && { printf '%s' "$p"; return 0; }
+  return 1
+}
+
+# 401 with no negotiate identity is a missing prerequisite, not a Solr fault.
+spnego_prereq_missing() {
+  [[ "${resp_code:-}" == "401" && -z "${SOLR_AUTH_OPTS:-}" ]]
 }
 
 pass=0
@@ -285,8 +346,10 @@ else
   INFRA_SOLR_KEYTAB="${INFRA_SOLR_KEYTAB:-$(solr_prop infra_solr_kerberos_keytab 2>/dev/null || echo /etc/security/keytabs/ambari-infra-solr.service.keytab)}"
   if [[ ! -r "$INFRA_SOLR_KEYTAB" ]]; then
     kinit_reason="keytab not readable: ${INFRA_SOLR_KEYTAB} (run with sudo)"
+  elif ! command -v klist >/dev/null 2>&1; then
+    kinit_reason="klist not installed (needed to read ${INFRA_SOLR_KEYTAB})"
   else
-    INFRA_SOLR_PRINCIPAL="${INFRA_SOLR_PRINCIPAL:-$(principal_from_keytab "$INFRA_SOLR_KEYTAB" || true)}"
+    INFRA_SOLR_PRINCIPAL="${INFRA_SOLR_PRINCIPAL:-$(resolve_infra_solr_principal "$INFRA_SOLR_KEYTAB" || true)}"
     if [[ -z "${INFRA_SOLR_PRINCIPAL:-}" ]]; then
       kinit_reason="no principal in ${INFRA_SOLR_KEYTAB}"
     fi
@@ -364,7 +427,7 @@ print('%s|%s|%s' % (lucene.get('solr-spec-version', '?'), d.get('mode', '?'), d.
         record_fail "SolrCloud znode ${INFRA_SOLR_ZNODE} (zkHost=${zk_host:-<none>})"
       fi
     fi
-  elif [[ "$resp_code" == "401" && -z "$SOLR_AUTH_OPTS" ]]; then
+  elif spnego_prereq_missing; then
     record_skip "system info ${h} (SPNEGO required, ${kinit_reason})"
   else
     record_fail "system info ${h} (HTTP ${resp_code})"
@@ -423,6 +486,9 @@ sys.exit(1 if bad else 0)
   else
     record_fail "live nodes match INFRA_SOLR hosts (${live_count}/${host_count})"
   fi
+elif spnego_prereq_missing; then
+  record_skip "CLUSTERSTATUS (SPNEGO required, ${kinit_reason})"
+  record_skip "live nodes match INFRA_SOLR hosts (SPNEGO required, ${kinit_reason})"
 else
   record_fail "CLUSTERSTATUS (HTTP ${resp_code})"
   record_skip "live nodes match INFRA_SOLR hosts (CLUSTERSTATUS failed)"
@@ -439,6 +505,8 @@ print(' '.join(d.get('collections') or []))
 " 2>/dev/null || true)"
   echo "        ${existing_collections:-<none>}"
   record_pass "collections LIST"
+elif spnego_prereq_missing; then
+  record_skip "collections LIST (SPNEGO required, ${kinit_reason})"
 else
   record_fail "collections LIST (HTTP ${resp_code})"
 fi
@@ -452,6 +520,8 @@ print(' '.join(d.get('configSets') or []))
 " 2>/dev/null || true)"
   echo "        configsets: ${configsets:-<none>}"
   record_pass "configsets LIST"
+elif spnego_prereq_missing; then
+  record_skip "configsets LIST (SPNEGO required, ${kinit_reason})"
 else
   record_fail "configsets LIST (HTTP ${resp_code})"
 fi
@@ -472,6 +542,8 @@ skip_write() {
 
 if [[ "$INFRA_SOLR_SKIP_WRITE" == "1" ]]; then
   skip_write "INFRA_SOLR_SKIP_WRITE=1"
+elif [[ -z "$SOLR_AUTH_OPTS" && -n "$kinit_reason" ]]; then
+  skip_write "SPNEGO required, ${kinit_reason}"
 elif [[ -z "$configsets" ]]; then
   skip_write "no usable configset"
 else
@@ -555,7 +627,7 @@ print(json.dumps([{'id': '%s-%d' % (tag, i), 'smoke_s': tag} for i in range(n)])
         done
       fi
       if [[ -n "$read_keytab" && -r "$read_keytab" ]]; then
-        read_principal="${INFRA_SOLR_READ_PRINCIPAL:-$(principal_from_keytab "$read_keytab" || true)}"
+        read_principal="${INFRA_SOLR_READ_PRINCIPAL:-$(principal_from_keytab "$read_keytab" "${INFRA_SOLR_HOSTS:-}" || true)}"
         read_ccache="${work_dir}/krb5cc_read"
         if [[ -n "$read_principal" ]] \
           && KRB5CCNAME="$read_ccache" kinit -kt "$read_keytab" "$read_principal" >/dev/null 2>&1; then
