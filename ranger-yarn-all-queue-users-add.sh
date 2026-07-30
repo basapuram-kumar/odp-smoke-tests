@@ -435,10 +435,83 @@ if [[ "$RANGER_DRY_RUN" == "1" ]]; then
   exit 0
 fi
 
+# Ranger rejects policy items that reference users it does not know about, which is the
+# usual cause of a 400 here. Report those names so the failure is actionable.
+report_unknown_ranger_users() {
+  CURL_EXTRA_OPTS="${CURL_EXTRA_OPTS:-}" \
+  RANGER_USER="$RANGER_USER" RANGER_PASSWORD="$RANGER_PASSWORD" \
+  python3 - "$ranger_base" "$merged_json" <<'PY'
+import json, os, shlex, subprocess, sys, urllib.parse
+
+ranger_base, policy_path = sys.argv[1].rstrip("/"), sys.argv[2]
+ruser, rpw = os.environ["RANGER_USER"], os.environ["RANGER_PASSWORD"]
+
+def curl_extra():
+    raw = os.environ.get("CURL_EXTRA_OPTS", "").strip()
+    return shlex.split(raw) if raw else []
+
+def get_json(path):
+    r = subprocess.run(
+        ["curl", "-sS", "-f", "-u", f"{ruser}:{rpw}"] + curl_extra() + [ranger_base + path],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
+    )
+    if r.returncode != 0 or not (r.stdout or "").strip():
+        return None
+    try:
+        return json.loads(r.stdout)
+    except ValueError:
+        return None
+
+with open(policy_path, encoding="utf-8") as f:
+    pol = json.load(f)
+
+wanted = set()
+for item in pol.get("policyItems") or []:
+    wanted.update(item.get("users") or [])
+if not wanted:
+    sys.exit(0)
+
+unknown = []
+for name in sorted(wanted):
+    j = get_json("/service/xusers/users?name=" + urllib.parse.quote(name))
+    if j is None:
+        # xusers API unavailable or not permitted for this account; skip the check.
+        sys.exit(0)
+    users = j.get("vXUsers") if isinstance(j, dict) else None
+    if not isinstance(users, list):
+        sys.exit(0)
+    if not any((u or {}).get("name") == name for u in users):
+        unknown.append(name)
+
+if unknown:
+    sys.stderr.write(
+        "HINT: these users are not present in Ranger: " + ",".join(unknown) + "\n"
+    )
+    sys.stderr.write(
+        "HINT: create the OS users and let Ranger usersync import them, or drop them "
+        "from RANGER_ADD_USERS.\n"
+    )
+PY
+}
+
 put_url="${ranger_base}/service/public/v2/api/policy/${policy_id}"
 echo "---- PUT ${put_url} ----"
-curl -sS -f ${CURL_EXTRA_OPTS:-} -u "${RANGER_USER}:${RANGER_PASSWORD}" -X PUT \
-  -H "Content-Type: application/json" --data-binary "@${merged_json}" "$put_url" \
-  || die "Ranger PUT failed"
+put_response="${work}/put-response.txt"
+put_code="$(
+  curl -sS ${CURL_EXTRA_OPTS:-} -u "${RANGER_USER}:${RANGER_PASSWORD}" -X PUT \
+    -H "Content-Type: application/json" --data-binary "@${merged_json}" \
+    -o "$put_response" -w '%{http_code}' "$put_url"
+)" || die "Ranger PUT request failed (curl transport error)"
+
+if [[ "$put_code" != 2* ]]; then
+  echo "ERROR: Ranger PUT returned HTTP ${put_code}" >&2
+  if [[ -s "$put_response" ]]; then
+    echo "---- Ranger response body ----" >&2
+    cat "$put_response" >&2
+    echo "" >&2
+  fi
+  report_unknown_ranger_users || true
+  die "Ranger PUT failed (HTTP ${put_code})"
+fi
 
 echo "OK: Ranger YARN policy users updated (policy id ${policy_id})."
