@@ -12,10 +12,10 @@
 #      WebHDFS LISTSTATUS through the gateway
 #
 # Step 5 needs the identity store behind the topology's authentication provider.
-# On a stock ODP install that is the Knox demo LDAP on port 33389; if it is not
-# running, every login fails with 401 and the authenticated checks are reported
-# SKIPPED (with the reason) instead of FAIL, since that is a prerequisite rather
-# than a gateway fault. Start it from Ambari: Knox > Actions > Start Demo LDAP.
+# On a stock ODP install that is the Knox demo LDAP on port 33389; it is not
+# started by default. Authenticated checks are therefore skipped by default
+# (KNOX_SKIP_AUTH=1). Set KNOX_SKIP_AUTH=0 after starting Demo LDAP
+# (Ambari: Knox > Actions > Start Demo LDAP) or pointing Knox at a real IdP.
 #
 # Environment (optional):
 #   AMBARI_CONFIG_FILE, AMBARI_BASE_URL, AMBARI_USER, AMBARI_PASSWORD, CLUSTER_NAME
@@ -25,7 +25,7 @@
 #   KNOX_USER             default admin
 #   KNOX_PASSWORD         default the admin entry from the Ambari users-ldif config
 #   KNOX_LDAP_URL         default main.ldapRealm.contextFactory.url from the topology
-#   KNOX_SKIP_AUTH        default 0 - set 1 for unauthenticated checks only
+#   KNOX_SKIP_AUTH        default 1 - unauthenticated checks only (set 0 to require Demo LDAP / identity store)
 #   KNOX_WEBHDFS_TOPOLOGY default default
 #   KNOX_SKIP_WEBHDFS     default 0
 #   CURL_EXTRA_OPTS       default -k (Knox ships a self-signed certificate)
@@ -235,7 +235,7 @@ load_env_file "$KNOX_ENV_FILE" 'KNOX_*|CURL_EXTRA_OPTS'
 # therefore <topology>=<path of a service that topology exposes>.
 KNOX_TOPOLOGY_PROBES="${KNOX_TOPOLOGY_PROBES:-admin=/api/v1/version default=/webhdfs/v1/?op=LISTSTATUS knoxsso=/api/v1/websso manager=/admin-ui/ homepage=/home metadata=/api/v1/metadata}"
 KNOX_USER="${KNOX_USER:-admin}"
-KNOX_SKIP_AUTH="${KNOX_SKIP_AUTH:-0}"
+KNOX_SKIP_AUTH="${KNOX_SKIP_AUTH:-1}"
 KNOX_SKIP_WEBHDFS="${KNOX_SKIP_WEBHDFS:-0}"
 KNOX_WEBHDFS_TOPOLOGY="${KNOX_WEBHDFS_TOPOLOGY:-default}"
 # Knox ships a self-signed certificate, so -k is the working default.

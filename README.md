@@ -710,8 +710,8 @@ JUPYTERHUB_SKIP_SPAWN=1 ./jupyterhub-sample-smoke.sh
 ```bash
 ./knox-sample-smoke.sh
 
-# Unauthenticated checks only:
-KNOX_SKIP_AUTH=1 ./knox-sample-smoke.sh
+# Include authenticated admin API + WebHDFS (needs Demo LDAP or real IdP):
+KNOX_SKIP_AUTH=0 ./knox-sample-smoke.sh
 ```
 
 ### Notes

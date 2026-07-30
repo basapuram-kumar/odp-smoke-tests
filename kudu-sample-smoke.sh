@@ -4,14 +4,15 @@
 # 2) GET .../clusters/<cluster>/services/KUDU/components/KUDU_MASTER for
 #    kudu.master_addresses (comma-separated if several masters).
 # 3) kinit as impala/<FQDN>, run impala-shell SQL: Kudu table create + insert + select.
-# 4) kinit as kudu/<FQDN> (kudu service keytab on this host), then Kudu CLI against the
-#    first master host from step 2 (same host Ambari reports for KUDU_MASTER), port 7051.
+# 4) Run Kudu CLI (table list + scan) on a host that has the Kudu package:
+#      - If /usr/odp/current/kudu/bin/kudu (or KUDU_CLI) is local -> run here.
+#      - Else discover a KUDU_MASTER host from Ambari and SSH there; stdout/stderr
+#        stream back to this console. Principal/keytab used on the remote host.
 #
 #    List tables (namespaced tables created via Impala show as impala::<db>.<table>):
 #      kudu table list  <kudu-master-host>:7051
 #    Scan rows for the Impala-managed Kudu table:
 #      kudu table scan <kudu-master-host>:7051 impala::kudu_db.test_kudu
-#    (From a Kudu install tree this is often: ./bin/kudu table list ... / table scan ...)
 #
 # Environment (optional):
 #   AMBARI_CONFIG_FILE, AMBARI_BASE_URL, AMBARI_USER, AMBARI_PASSWORD, CLUSTER_NAME
@@ -23,8 +24,11 @@
 #   KUDU_NUM_TABLET_REPLICAS default 1
 #   KUDU_HASH_PARTITIONS     default 3
 #   KUDU_KEYTAB              default /etc/security/keytabs/kudu.keytab (for kudu CLI)
-#   KUDU_PRINCIPAL_HOST      host in kudu/<host> (default: same as IMPALA principal host)
-#   KUDU_CLI                 default /usr/odp/current/kudu/bin/kudu
+#   KUDU_PRINCIPAL_HOST      host in kudu/<host>; remote default is remote FQDN via hostname -f
+#   KUDU_CLI                 default /usr/odp/current/kudu/bin/kudu (also tried: /usr/bin/kudu)
+#   KUDU_CLI_HOST            force SSH host for CLI (default: first Ambari KUDU_MASTER)
+#   KUDU_SSH_USER            default root
+#   KUDU_SSH_OPTS            extra ssh args (quoted string split by shell)
 #   KUDU_MASTER_RPC_PORT     default 7051 (kudu CLI master address port)
 #   KUDU_NATIVE_TABLE        default impala::kudu_db.test_kudu (kudu table scan name)
 #   KUDU_CLI_SKIP            if "1", skip kudu binary list/scan after Impala
@@ -38,7 +42,8 @@ IMPALA_SHELL="${IMPALA_SHELL:-impala-shell}"
 KUDU_NUM_TABLET_REPLICAS="${KUDU_NUM_TABLET_REPLICAS:-1}"
 KUDU_HASH_PARTITIONS="${KUDU_HASH_PARTITIONS:-3}"
 KUDU_KEYTAB="${KUDU_KEYTAB:-/etc/security/keytabs/kudu.keytab}"
-KUDU_CLI="${KUDU_CLI:-/usr/odp/current/kudu/bin/kudu}"
+KUDU_CLI="${KUDU_CLI:-}"
+KUDU_SSH_USER="${KUDU_SSH_USER:-root}"
 KUDU_MASTER_RPC_PORT="${KUDU_MASTER_RPC_PORT:-7051}"
 KUDU_NATIVE_TABLE="${KUDU_NATIVE_TABLE:-impala::kudu_db.test_kudu}"
 KUDU_CLI_SKIP="${KUDU_CLI_SKIP:-0}"
@@ -112,20 +117,39 @@ resolve_impalad() {
   printf '%s' "${h}:21050"
 }
 
-resolve_kudu_principal_host() {
-  if [[ -n "${KUDU_PRINCIPAL_HOST:-}" ]]; then
-    printf '%s' "$KUDU_PRINCIPAL_HOST"
-    return
-  fi
-  resolve_impala_host
+first_csv_host() {
+  local first="${1%%,*}"
+  first="${first#"${first%%[![:space:]]*}"}"
+  first="${first%"${first##*[![:space:]]}"}"
+  printf '%s' "$first"
 }
 
 kudu_master_rpc_addr() {
-  local first="${kudu_masters%%,*}"
-  first="${first#"${first%%[![:space:]]*}"}"
-  first="${first%"${first##*[![:space:]]}"}"
+  local first
+  first="$(first_csv_host "$kudu_masters")"
   [[ -n "$first" ]] || die "empty Kudu master host"
   printf '%s' "${first}:${KUDU_MASTER_RPC_PORT}"
+}
+
+# Prefer an explicit path, then common ODP locations.
+resolve_local_kudu_cli() {
+  local c
+  for c in ${KUDU_CLI:+"$KUDU_CLI"} /usr/odp/current/kudu/bin/kudu /usr/bin/kudu; do
+    if [[ -x "$c" ]]; then
+      printf '%s' "$c"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Host Ambari reports as KUDU_MASTER (or KUDU_CLI_HOST override).
+resolve_kudu_cli_host() {
+  if [[ -n "${KUDU_CLI_HOST:-}" ]]; then
+    printf '%s' "$KUDU_CLI_HOST"
+    return
+  fi
+  first_csv_host "$kudu_masters"
 }
 
 need_cmd curl
@@ -161,14 +185,7 @@ if [[ ! -r "$IMPALA_KEYTAB" ]]; then
   die "keytab not readable: $IMPALA_KEYTAB"
 fi
 
-if [[ "$KUDU_CLI_SKIP" != "1" && ! -x "$KUDU_CLI" ]]; then
-  die "Kudu CLI not executable: $KUDU_CLI (set KUDU_CLI or KUDU_CLI_SKIP=1)"
-fi
-
-if [[ "$KUDU_CLI_SKIP" != "1" && ! -r "$KUDU_KEYTAB" ]]; then
-  die "keytab not readable: $KUDU_KEYTAB (set KUDU_KEYTAB or KUDU_CLI_SKIP=1)"
-fi
-
+# Kudu CLI may run locally or via SSH to a KUDU_MASTER host; defer binary/keytab checks.
 if [[ -n "${CLUSTER_NAME:-}" ]]; then
   cluster="$CLUSTER_NAME"
 else
@@ -275,20 +292,99 @@ if [[ "$KUDU_CLI_SKIP" == "1" ]]; then
   exit 0
 fi
 
-kudu_host="$(resolve_kudu_principal_host)"
-kudu_principal="kudu/${kudu_host}"
 kudu_rpc="$(kudu_master_rpc_addr)"
+local_cli=""
+if local_cli="$(resolve_local_kudu_cli)"; then
+  :
+else
+  local_cli=""
+fi
 
-echo "---- kinit (Kudu CLI) ${kudu_principal} ----"
-kinit -kt "$KUDU_KEYTAB" "$kudu_principal" || die "kinit failed for Kudu CLI"
+kudu_cli_host="$(resolve_kudu_cli_host)"
+[[ -n "$kudu_cli_host" ]] || die "could not resolve Kudu CLI host (set KUDU_CLI_HOST or discover KUDU_MASTER via Ambari)"
+
+# Stream remote stdout/stderr to this console with a host prefix.
+ssh_stream() {
+  local host="$1"
+  shift
+  need_cmd ssh
+  # shellcheck disable=SC2086
+  local -a ssh_cmd=(ssh -o BatchMode=yes -o ConnectTimeout=15 ${KUDU_SSH_OPTS:-} "${KUDU_SSH_USER}@${host}")
+  "${ssh_cmd[@]}" "$@" 2>&1 | while IFS= read -r line || [[ -n "$line" ]]; do
+    printf '[kudu@%s] %s\n' "$host" "$line"
+  done
+  return "${PIPESTATUS[0]}"
+}
+
+run_kudu_cli() {
+  # Usage: run_kudu_cli <label> <kudu-subcmd...>   e.g. run_kudu_cli list table list host:7051
+  local label="$1"
+  shift
+  if [[ -n "$local_cli" ]]; then
+    echo "    ${local_cli} $*"
+    "$local_cli" "$@"
+    return
+  fi
+
+  local cli_q kt_q phost_q
+  cli_q="$(printf '%q' "${KUDU_CLI:-}")"
+  kt_q="$(printf '%q' "$KUDU_KEYTAB")"
+  phost_q="$(printf '%q' "${KUDU_PRINCIPAL_HOST:-}")"
+  # Rebuild remote argv from remaining args, safely quoted.
+  local remote_argv=""
+  local a
+  for a in "$@"; do
+    remote_argv+=" $(printf '%q' "$a")"
+  done
+
+  echo "---- remote (${KUDU_SSH_USER}@${kudu_cli_host}): kudu ${label} ----"
+  ssh_stream "$kudu_cli_host" bash -s <<REMOTE
+set -euo pipefail
+CLI=""
+if [ -n ${cli_q} ] && [ -x ${cli_q} ]; then
+  CLI=${cli_q}
+fi
+for c in /usr/odp/current/kudu/bin/kudu /usr/bin/kudu; do
+  if [ -z "\$CLI" ] && [ -x "\$c" ]; then CLI="\$c"; fi
+done
+[ -n "\$CLI" ] || { echo "ERROR: kudu CLI not found on \$(hostname -f)" >&2; exit 1; }
+KT=${kt_q}
+[ -r "\$KT" ] || { echo "ERROR: keytab not readable: \$KT" >&2; exit 1; }
+if [ -n ${phost_q} ]; then
+  PH=${phost_q}
+else
+  PH="\$(hostname -f 2>/dev/null || hostname)"
+fi
+echo "remote host=\$(hostname -f) cli=\$CLI principal=kudu/\$PH"
+kinit -kt "\$KT" "kudu/\$PH"
+echo "+ \$CLI${remote_argv}"
+"\$CLI"${remote_argv}
+REMOTE
+}
+
+if [[ -n "$local_cli" ]]; then
+  echo "Kudu CLI mode:        local (${local_cli})"
+  if [[ ! -r "$KUDU_KEYTAB" ]]; then
+    die "keytab not readable: $KUDU_KEYTAB (set KUDU_KEYTAB or KUDU_CLI_SKIP=1)"
+  fi
+  kudu_host="$(resolve_impala_host)"
+  if [[ -n "${KUDU_PRINCIPAL_HOST:-}" ]]; then
+    kudu_host="$KUDU_PRINCIPAL_HOST"
+  fi
+  kudu_principal="kudu/${kudu_host}"
+  echo "---- kinit (Kudu CLI) ${kudu_principal} ----"
+  kinit -kt "$KUDU_KEYTAB" "$kudu_principal" || die "kinit failed for Kudu CLI"
+else
+  echo "Kudu CLI mode:        remote via SSH (${KUDU_SSH_USER}@${kudu_cli_host})"
+  echo "    Ambari KUDU_MASTER host(s): ${kudu_masters}"
+  echo "    (local kudu binary not found; streaming remote console output below)"
+fi
 
 echo "---- Kudu CLI: list tables on ${kudu_rpc} ----"
-echo "    ${KUDU_CLI} table list ${kudu_rpc}"
-"$KUDU_CLI" table list "$kudu_rpc"
+run_kudu_cli list table list "$kudu_rpc" || die "kudu table list failed"
 
 echo "---- Kudu CLI: scan table ${KUDU_NATIVE_TABLE} on ${kudu_rpc} ----"
-echo "    ${KUDU_CLI} table scan ${kudu_rpc} ${KUDU_NATIVE_TABLE}"
-if ! "$KUDU_CLI" table scan "$kudu_rpc" "$KUDU_NATIVE_TABLE"; then
+if ! run_kudu_cli scan table scan "$kudu_rpc" "$KUDU_NATIVE_TABLE"; then
   echo "WARN: kudu table scan failed. List tables above and set KUDU_NATIVE_TABLE if the Impala table id differs." >&2
 fi
 

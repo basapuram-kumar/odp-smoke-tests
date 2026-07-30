@@ -8,10 +8,13 @@
 #   headless keytab before import/export. Set SQOOP_SKIP_KINIT=1 to skip (non-Kerberos or
 #   when a usable ticket is already present).
 #
-# Prerequisites (on MySQL, once as admin - or set SQOOP_MYSQL_SETUP=1):
-#   mysql -u root -p < sql/sqoop-smoke-mysql-setup.sql
-#   That creates database sqoop_smoke, user sqoop_smoke / password sqoop_smoke, table smoke_import
-#   with five rows (defaults in this script match that SQL).
+# MySQL fixture: created automatically (SQOOP_MYSQL_AUTO_SETUP=1, the default).
+#   The script first probes whether SQOOP_MYSQL_USER can read the source table over TCP.
+#   If not, it logs in as a local MySQL admin (SQOOP_MYSQL_ROOT_USER, optionally
+#   SQOOP_MYSQL_ROOT_PASSWORD, else passwordless socket / ~/.my.cnf) and creates the
+#   database, user, grants, and fixture tables from the effective SQOOP_MYSQL_* values.
+#   Set SQOOP_MYSQL_AUTO_SETUP=0 to require the manual step instead:
+#     mysql -u root -p < sql/sqoop-smoke-mysql-setup.sql
 #
 # Environment:
 #   SQOOP_CONFIG_FILE       default: <script-dir>/configs/sqoop.env - optional KEY=value file (gitignored
@@ -22,7 +25,8 @@
 #   CLUSTER_NAME            If set, skip Ambari lookup
 #   HDFS_KEYTAB             default: /etc/security/keytabs/hdfs.headless.keytab
 #   SQOOP_SKIP_KINIT        default: 0 - set 1 to skip Ambari + kinit
-#   SQOOP_MYSQL_SETUP       default: 0 - set 1 to apply sql/sqoop-smoke-mysql-setup.sql as MySQL root
+#   SQOOP_MYSQL_AUTO_SETUP  default: 1 - auto-create database/user/tables when the probe fails
+#   SQOOP_MYSQL_SETUP       default: 0 - set 1 to always apply sql/sqoop-smoke-mysql-setup.sql as MySQL root
 #   SQOOP_MYSQL_SETUP_SQL   default: <script-dir>/sql/sqoop-smoke-mysql-setup.sql
 #   SQOOP_MYSQL_ROOT_USER   default: root (used only when SQOOP_MYSQL_SETUP=1)
 #   SQOOP_MYSQL_ROOT_PASSWORD  optional; if unset, mysql root uses socket/auth plugin defaults
@@ -105,6 +109,7 @@ load_sqoop_env_file_if_present() {
       SQOOP_EXPORT_COLUMNS) [[ "${SQOOP_EXPORT_COLUMNS+set}" == "set" ]] || SQOOP_EXPORT_COLUMNS="$val" ;;
       SQOOP_SKIP_KINIT) [[ "${SQOOP_SKIP_KINIT+set}" == "set" ]] || SQOOP_SKIP_KINIT="$val" ;;
       SQOOP_MYSQL_SETUP) [[ "${SQOOP_MYSQL_SETUP+set}" == "set" ]] || SQOOP_MYSQL_SETUP="$val" ;;
+      SQOOP_MYSQL_AUTO_SETUP) [[ "${SQOOP_MYSQL_AUTO_SETUP+set}" == "set" ]] || SQOOP_MYSQL_AUTO_SETUP="$val" ;;
       SQOOP_MYSQL_SETUP_SQL) [[ "${SQOOP_MYSQL_SETUP_SQL+set}" == "set" ]] || SQOOP_MYSQL_SETUP_SQL="$val" ;;
       SQOOP_MYSQL_ROOT_USER) [[ "${SQOOP_MYSQL_ROOT_USER+set}" == "set" ]] || SQOOP_MYSQL_ROOT_USER="$val" ;;
       SQOOP_MYSQL_ROOT_PASSWORD) [[ "${SQOOP_MYSQL_ROOT_PASSWORD+set}" == "set" ]] || SQOOP_MYSQL_ROOT_PASSWORD="$val" ;;
@@ -213,6 +218,127 @@ apply_mysql_setup_sql_if_requested() {
   fi
 }
 
+# ---------------------------------------------------------------------------
+# Auto-provisioning of the MySQL fixture (no manual step needed).
+#
+# Probe as the smoke user first; only touch MySQL as admin when the probe fails.
+# SQL is generated from the effective SQOOP_MYSQL_* values so overrides work too.
+# ---------------------------------------------------------------------------
+
+# Populates MYSQL_ADMIN_CMD with a working admin invocation, or returns 1.
+# Order: explicit root password, then passwordless socket/defaults-file login.
+declare -a MYSQL_ADMIN_CMD=()
+resolve_mysql_admin_cmd() {
+  command -v "$SQOOP_MYSQL_CLIENT" >/dev/null 2>&1 || return 1
+
+  if [[ -n "${SQOOP_MYSQL_ROOT_PASSWORD:-}" ]]; then
+    if MYSQL_PWD="$SQOOP_MYSQL_ROOT_PASSWORD" "$SQOOP_MYSQL_CLIENT" \
+        -u"$SQOOP_MYSQL_ROOT_USER" -N -e 'SELECT 1;' >/dev/null 2>&1; then
+      MYSQL_ADMIN_CMD=(env "MYSQL_PWD=$SQOOP_MYSQL_ROOT_PASSWORD" "$SQOOP_MYSQL_CLIENT" -u"$SQOOP_MYSQL_ROOT_USER")
+      return 0
+    fi
+    return 1
+  fi
+
+  # Local socket as OS root, or credentials from ~/.my.cnf.
+  if "$SQOOP_MYSQL_CLIENT" -u"$SQOOP_MYSQL_ROOT_USER" -N -e 'SELECT 1;' >/dev/null 2>&1; then
+    MYSQL_ADMIN_CMD=("$SQOOP_MYSQL_CLIENT" -u"$SQOOP_MYSQL_ROOT_USER")
+    return 0
+  fi
+  if "$SQOOP_MYSQL_CLIENT" -N -e 'SELECT 1;' >/dev/null 2>&1; then
+    MYSQL_ADMIN_CMD=("$SQOOP_MYSQL_CLIENT")
+    return 0
+  fi
+  return 1
+}
+
+# True when the smoke user can read the source table over TCP (what Sqoop does).
+smoke_user_can_read_source() {
+  command -v "$SQOOP_MYSQL_CLIENT" >/dev/null 2>&1 || return 1
+  local pw="${SQOOP_MYSQL_PASSWORD:-}"
+  if [[ -n "${SQOOP_MYSQL_PASSWORD_FILE:-}" && -f "${SQOOP_MYSQL_PASSWORD_FILE}" ]]; then
+    pw="$(tr -d '\n\r' <"$SQOOP_MYSQL_PASSWORD_FILE")"
+  fi
+  MYSQL_PWD="$pw" "$SQOOP_MYSQL_CLIENT" \
+    -h "$SQOOP_MYSQL_HOST" -P"$SQOOP_MYSQL_PORT" -u"$SQOOP_MYSQL_USER" \
+    -N -e "SELECT COUNT(*) FROM \`${SQOOP_SOURCE_TABLE}\`;" "$SQOOP_MYSQL_DATABASE" \
+    >/dev/null 2>&1
+}
+
+# Emit idempotent provisioning SQL for the effective database/user/tables.
+# ALTER USER is included so an existing account with a stale password is repaired.
+generate_mysql_setup_sql() {
+  local db="$SQOOP_MYSQL_DATABASE"
+  local user="$SQOOP_MYSQL_USER"
+  local pw="${SQOOP_MYSQL_PASSWORD:-}"
+  if [[ -n "${SQOOP_MYSQL_PASSWORD_FILE:-}" && -f "${SQOOP_MYSQL_PASSWORD_FILE}" ]]; then
+    pw="$(tr -d '\n\r' <"$SQOOP_MYSQL_PASSWORD_FILE")"
+  fi
+  local src="$SQOOP_SOURCE_TABLE"
+  local dst="$SQOOP_EXPORT_TABLE"
+
+  cat <<SQL
+CREATE DATABASE IF NOT EXISTS \`${db}\`;
+
+CREATE USER IF NOT EXISTS '${user}'@'%' IDENTIFIED BY '${pw}';
+CREATE USER IF NOT EXISTS '${user}'@'localhost' IDENTIFIED BY '${pw}';
+ALTER USER '${user}'@'%' IDENTIFIED BY '${pw}';
+ALTER USER '${user}'@'localhost' IDENTIFIED BY '${pw}';
+
+GRANT ALL PRIVILEGES ON \`${db}\`.* TO '${user}'@'%';
+GRANT ALL PRIVILEGES ON \`${db}\`.* TO '${user}'@'localhost';
+FLUSH PRIVILEGES;
+
+USE \`${db}\`;
+
+CREATE TABLE IF NOT EXISTS \`${src}\` (
+  id INT NOT NULL,
+  label VARCHAR(64) NOT NULL,
+  PRIMARY KEY (id)
+) ENGINE=InnoDB;
+
+INSERT INTO \`${src}\` (id, label) VALUES
+  (1, 'alpha'),
+  (2, 'beta'),
+  (3, 'gamma'),
+  (4, 'delta'),
+  (5, 'epsilon')
+ON DUPLICATE KEY UPDATE label = VALUES(label);
+
+CREATE TABLE IF NOT EXISTS \`${dst}\` LIKE \`${src}\`;
+SQL
+}
+
+# Create database/user/tables when the smoke user cannot read the fixture yet.
+ensure_mysql_fixture() {
+  [[ "$SQOOP_MYSQL_AUTO_SETUP" == "1" ]] || return 0
+
+  if smoke_user_can_read_source; then
+    echo "---- MySQL fixture OK: ${SQOOP_MYSQL_USER}@${SQOOP_MYSQL_HOST} can read ${SQOOP_MYSQL_DATABASE}.${SQOOP_SOURCE_TABLE} ----"
+    return 0
+  fi
+
+  echo "---- MySQL fixture missing or unusable - provisioning automatically ----"
+  if ! command -v "$SQOOP_MYSQL_CLIENT" >/dev/null 2>&1; then
+    die "mysql client not found, so the fixture cannot be created automatically. Install it, or apply ${SQOOP_MYSQL_SETUP_SQL} on the MySQL host, or set SQOOP_MYSQL_AUTO_SETUP=0."
+  fi
+
+  if ! resolve_mysql_admin_cmd; then
+    die "cannot log in to MySQL as an admin to create the fixture. Set SQOOP_MYSQL_ROOT_USER / SQOOP_MYSQL_ROOT_PASSWORD, or apply ${SQOOP_MYSQL_SETUP_SQL} manually, or set SQOOP_MYSQL_AUTO_SETUP=0."
+  fi
+
+  echo "    admin login: ${SQOOP_MYSQL_ROOT_USER} (local)"
+  echo "    creating database=${SQOOP_MYSQL_DATABASE} user=${SQOOP_MYSQL_USER} tables=${SQOOP_SOURCE_TABLE},${SQOOP_EXPORT_TABLE}"
+  if ! generate_mysql_setup_sql | "${MYSQL_ADMIN_CMD[@]}"; then
+    die "automatic MySQL provisioning failed (admin user ${SQOOP_MYSQL_ROOT_USER}). Apply ${SQOOP_MYSQL_SETUP_SQL} manually or set SQOOP_MYSQL_AUTO_SETUP=0."
+  fi
+
+  if ! smoke_user_can_read_source; then
+    die "provisioning ran but ${SQOOP_MYSQL_USER}@${SQOOP_MYSQL_HOST} still cannot read ${SQOOP_MYSQL_DATABASE}.${SQOOP_SOURCE_TABLE}. Check MySQL host-based grants (needs '${SQOOP_MYSQL_USER}'@'%') and the authentication plugin."
+  fi
+  echo "---- MySQL fixture ready ----"
+}
+
 load_sqoop_env_file_if_present "$SQOOP_CONFIG_FILE"
 if [[ -f "$SQOOP_CONFIG_FILE" ]]; then
   echo "---- Loaded $SQOOP_CONFIG_FILE (only keys that were unset in the shell) ----" >&2
@@ -235,6 +361,7 @@ SQOOP_MYSQL_CLIENT="${SQOOP_MYSQL_CLIENT:-mysql}"
 SQOOP_TRUNCATE_EXPORT="${SQOOP_TRUNCATE_EXPORT:-0}"
 SQOOP_SKIP_KINIT="${SQOOP_SKIP_KINIT:-0}"
 SQOOP_MYSQL_SETUP="${SQOOP_MYSQL_SETUP:-0}"
+SQOOP_MYSQL_AUTO_SETUP="${SQOOP_MYSQL_AUTO_SETUP:-1}"
 SQOOP_MYSQL_SETUP_SQL="${SQOOP_MYSQL_SETUP_SQL:-${SCRIPT_DIR}/sql/sqoop-smoke-mysql-setup.sql}"
 SQOOP_MYSQL_ROOT_USER="${SQOOP_MYSQL_ROOT_USER:-root}"
 HDFS_KEYTAB="${HDFS_KEYTAB:-/etc/security/keytabs/hdfs.headless.keytab}"
@@ -327,6 +454,9 @@ if [[ -z "${SQOOP_MYSQL_HOST:-}" ]]; then
   echo "---- SQOOP_MYSQL_HOST unset - using this host: $SQOOP_MYSQL_HOST ----" >&2
 fi
 validate_mysql_password_file_if_set
+
+# Needs SQOOP_MYSQL_HOST resolved, so it runs after the default above.
+ensure_mysql_fixture
 
 CONNECT_URL="$(jdbc_url "$SQOOP_MYSQL_HOST")"
 
