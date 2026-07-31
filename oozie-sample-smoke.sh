@@ -226,6 +226,48 @@ oozie_job_status() {
     | awk -F: '/^Status[[:space:]]*:/ { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit }'
 }
 
+# A workflow left RUNNING keeps its launcher ApplicationMaster alive forever,
+# and every leaked launcher holds a YARN container that later runs (and any
+# other tenant) never get back. Always kill a job we are done waiting on.
+RUNNING_JOB_ID=""
+
+oozie_kill_job() {
+  local job_id="$1"
+  [[ -n "$job_id" ]] || return 0
+  echo "    killing workflow ${job_id} to release its launcher container"
+  oozie job -oozie "$OOZIE_URL" -kill "$job_id" >/dev/null 2>&1 || true
+}
+
+kill_running_job() {
+  [[ -n "$RUNNING_JOB_ID" ]] || return 0
+  oozie_kill_job "$RUNNING_JOB_ID"
+  RUNNING_JOB_ID=""
+}
+
+# Prints why an action can be stuck: a container request larger than any single
+# node's free memory stays pending forever while the cluster still reports
+# plenty of memory available.
+report_yarn_pressure() {
+  local nm_mb max_mb tez_am_mb
+  nm_mb="$(xml_prop_value "${HADOOP_CONF_DIR:-/etc/hadoop/conf}/yarn-site.xml" \
+    yarn.nodemanager.resource.memory-mb 2>/dev/null || true)"
+  max_mb="$(xml_prop_value "${HADOOP_CONF_DIR:-/etc/hadoop/conf}/yarn-site.xml" \
+    yarn.scheduler.maximum-allocation-mb 2>/dev/null || true)"
+  tez_am_mb="$(xml_prop_value "${TEZ_CONF_DIR:-/etc/tez/conf}/tez-site.xml" \
+    tez.am.resource.memory.mb 2>/dev/null || true)"
+  echo "---- YARN sizing (stuck actions are usually unschedulable requests) ----" >&2
+  echo "    yarn.nodemanager.resource.memory-mb  = ${nm_mb:-<unknown>}" >&2
+  echo "    yarn.scheduler.maximum-allocation-mb = ${max_mb:-<unknown>}" >&2
+  echo "    tez.am.resource.memory.mb            = ${tez_am_mb:-<unknown>}" >&2
+  if [[ "$nm_mb" =~ ^[0-9]+$ && "$tez_am_mb" =~ ^[0-9]+$ ]] && (( tez_am_mb >= nm_mb )); then
+    echo "    WARN: a Tez AM needs ${tez_am_mb}MB but a NodeManager only offers ${nm_mb}MB," >&2
+    echo "          so the AM only starts on a completely idle node. Lower" >&2
+    echo "          tez.am.resource.memory.mb (Ambari > Tez > Configs) to well under" >&2
+    echo "          the NodeManager size, or raise the NodeManager memory." >&2
+  fi
+  echo "    Pending applications hold no logs; check the RM UI for state=ACCEPTED." >&2
+}
+
 # run_workflow <label> <local-dir> [extra job.properties lines...]
 run_workflow() {
   local label="$1" local_dir="$2"
@@ -272,6 +314,7 @@ run_workflow() {
   job_id="$(printf '%s\n' "$run_out" | awk '/^job:/ { print $NF; exit }')"
   [[ -n "$job_id" ]] || { echo "ERROR: could not parse Oozie job id for ${label}" >&2; return 1; }
   echo "    job id: $job_id"
+  RUNNING_JOB_ID="$job_id"
 
   echo "---- wait for SUCCEEDED (timeout ${OOZIE_TIMEOUT_SECONDS}s) ----"
   local deadline status now
@@ -281,10 +324,12 @@ run_workflow() {
     echo "    status=${status:-UNKNOWN}"
     case "${status}" in
       SUCCEEDED)
+        RUNNING_JOB_ID=""
         echo "    OK: workflow ${label} SUCCEEDED (job $job_id)"
         return 0
         ;;
-      KILLED|FAILED|SUSPENDED)
+      KILLED|FAILED)
+        RUNNING_JOB_ID=""
         echo "---- oozie job -info (${label}) ----" >&2
         oozie job -oozie "$OOZIE_URL" -info "$job_id" >&2 || true
         echo "---- oozie job -log tail (${label}) ----" >&2
@@ -292,11 +337,22 @@ run_workflow() {
         echo "ERROR: workflow ${label} ended with status=$status (job $job_id)" >&2
         return 1
         ;;
+      SUSPENDED)
+        echo "---- oozie job -info (${label}) ----" >&2
+        oozie job -oozie "$OOZIE_URL" -info "$job_id" >&2 || true
+        echo "ERROR: workflow ${label} ended with status=$status (job $job_id)" >&2
+        kill_running_job
+        return 1
+        ;;
     esac
     now="$(date +%s)"
     if (( now >= deadline )); then
       oozie job -oozie "$OOZIE_URL" -info "$job_id" >&2 || true
       echo "ERROR: timed out waiting for workflow ${label} (job $job_id, last status=${status:-UNKNOWN})" >&2
+      report_yarn_pressure
+      # Killing here matters: otherwise this run's launcher keeps a container
+      # for good and every later attempt starts with less capacity.
+      kill_running_job
       return 1
     fi
     sleep "$OOZIE_POLL_SECONDS"
@@ -388,7 +444,8 @@ echo "---- oozie admin -status ----"
 oozie admin -oozie "$OOZIE_URL" -status || die "oozie admin -status failed"
 
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/oozie-smoke.XXXXXX")"
-trap 'rm -rf "$work_dir"' EXIT
+# Ctrl-C during the wait loop must not leave a launcher AM behind either.
+trap 'kill_running_job; rm -rf "$work_dir"' EXIT INT TERM
 
 pass=0
 fail=0

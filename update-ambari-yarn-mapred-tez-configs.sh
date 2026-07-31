@@ -9,13 +9,27 @@
 #    UI: Services > YARN > Configs > Advanced > Advanced container-executor
 #
 # 2) MapReduce2 / mapred-site:
-#      mapreduce.map.java.opts -> -Xmx3276m
+#      mapreduce.map.memory.mb + mapreduce.map.java.opts
 #    UI: Services > MapReduce2 > Configs > Advanced > Advanced mapred-site
 #        (MR Map Java Heap Size)
 #
 # 3) Tez / tez-site:
-#      tez.am.resource.memory.mb -> 5120
+#      tez.am.resource.memory.mb + tez.am.java.opts
 #    UI: Services > Tez > Configs > General
+#
+# Container sizes and heaps are derived from the cluster's actual NodeManager
+# capacity (yarn.nodemanager.resource.memory-mb and the scheduler allocation
+# limits) unless you override them. Two combinations are rejected outright,
+# because both produce jobs that hang or die with no useful error:
+#
+#   * a container larger than yarn.scheduler.maximum-allocation-mb, or large
+#     enough to need a mostly idle NodeManager. A Tez AM sized at the full
+#     NodeManager memory only starts when a node is completely empty, so any
+#     other container in the cluster leaves it pending in ACCEPTED forever.
+#   * a -Xmx heap that does not fit inside its own container, which YARN kills
+#     for exceeding physical memory.
+#
+# Set FORCE_UNSAFE_SIZING=1 to downgrade those refusals to warnings.
 #
 # 4) Ranger YARN policy "all - queue":
 #      merge users: hdfs,yarn,hive,spark,flink,pinot,kafka
@@ -29,8 +43,11 @@
 #   AMBARI_BASE_URL, AMBARI_USER, AMBARI_PASSWORD
 #   CLUSTER_NAME              if set, skip Ambari cluster-name lookup
 #   BANNED_USERS              default mapred,bin
-#   MAPREDUCE_MAP_JAVA_OPTS   default -Xmx3276m
-#   TEZ_AM_RESOURCE_MEMORY_MB default 5120
+#   MAPREDUCE_MAP_MEMORY_MB   default derived from NodeManager capacity
+#   MAPREDUCE_MAP_JAVA_OPTS   default derived (80% of the map container)
+#   TEZ_AM_RESOURCE_MEMORY_MB default derived from NodeManager capacity
+#   TEZ_AM_JAVA_OPTS          default derived (80% of the AM container)
+#   FORCE_UNSAFE_SIZING       if 1, warn instead of refusing unsafe sizes
 #   RANGER_ADD_USERS          default hdfs,yarn,hive,spark,flink,pinot,kafka
 #   RANGER_ENV_FILE           default <script-dir>/configs/ranger.env
 #   SKIP_BANNED_USERS         if 1, skip container-executor update
@@ -57,8 +74,12 @@ AMBARI_CONFIG_FILE="${AMBARI_CONFIG_FILE:-${SCRIPT_DIR}/configs/ambari.env}"
 RANGER_ENV_FILE="${RANGER_ENV_FILE:-${RANGER_CONFIG_FILE:-${SCRIPT_DIR}/configs/ranger.env}}"
 RANGER_USERS_SCRIPT="${RANGER_USERS_SCRIPT:-${SCRIPT_DIR}/ranger-yarn-all-queue-users-add.sh}"
 BANNED_USERS="${BANNED_USERS:-mapred,bin}"
-MAPREDUCE_MAP_JAVA_OPTS="${MAPREDUCE_MAP_JAVA_OPTS:--Xmx3276m}"
-TEZ_AM_RESOURCE_MEMORY_MB="${TEZ_AM_RESOURCE_MEMORY_MB:-5120}"
+# Empty means "derive from the cluster's NodeManager capacity".
+MAPREDUCE_MAP_MEMORY_MB="${MAPREDUCE_MAP_MEMORY_MB:-}"
+MAPREDUCE_MAP_JAVA_OPTS="${MAPREDUCE_MAP_JAVA_OPTS:-}"
+TEZ_AM_RESOURCE_MEMORY_MB="${TEZ_AM_RESOURCE_MEMORY_MB:-}"
+TEZ_AM_JAVA_OPTS="${TEZ_AM_JAVA_OPTS:-}"
+FORCE_UNSAFE_SIZING="${FORCE_UNSAFE_SIZING:-0}"
 # Default matches: ./ranger-yarn-all-queue-users-add.sh hdfs,yarn,hive,spark,flink,pinot,kafka
 RANGER_ADD_USERS="${RANGER_ADD_USERS:-hdfs,yarn,hive,spark,flink,pinot,kafka}"
 SKIP_BANNED_USERS="${SKIP_BANNED_USERS:-0}"
@@ -155,12 +176,15 @@ fi
 
 log "Cluster: ${CLUSTER_NAME}"
 [[ "${SKIP_BANNED_USERS}" == "1" ]] || log "Target banned.users=${BANNED_USERS}"
-[[ "${SKIP_MAP_JAVA_OPTS}" == "1" ]] || log "Target mapreduce.map.java.opts=${MAPREDUCE_MAP_JAVA_OPTS}"
-[[ "${SKIP_TEZ_AM_MEMORY}" == "1" ]] || log "Target tez.am.resource.memory.mb=${TEZ_AM_RESOURCE_MEMORY_MB}"
+[[ "${SKIP_MAP_JAVA_OPTS}" == "1" ]] \
+  || log "Target map container=${MAPREDUCE_MAP_MEMORY_MB:-derived} heap=${MAPREDUCE_MAP_JAVA_OPTS:-derived}"
+[[ "${SKIP_TEZ_AM_MEMORY}" == "1" ]] \
+  || log "Target Tez AM container=${TEZ_AM_RESOURCE_MEMORY_MB:-derived} heap=${TEZ_AM_JAVA_OPTS:-derived}"
 [[ "${SKIP_RANGER_YARN_USERS}" == "1" ]] || log "Target Ranger YARN all-queue users=${RANGER_ADD_USERS}"
 
 export AMBARI_BASE_URL AMBARI_USER AMBARI_PASSWORD CLUSTER_NAME
-export BANNED_USERS MAPREDUCE_MAP_JAVA_OPTS TEZ_AM_RESOURCE_MEMORY_MB
+export BANNED_USERS MAPREDUCE_MAP_MEMORY_MB MAPREDUCE_MAP_JAVA_OPTS
+export TEZ_AM_RESOURCE_MEMORY_MB TEZ_AM_JAVA_OPTS FORCE_UNSAFE_SIZING
 export SKIP_BANNED_USERS SKIP_MAP_JAVA_OPTS SKIP_TEZ_AM_MEMORY DRY_RUN
 export CURL_EXTRA_OPTS="${CURL_EXTRA_OPTS:-}"
 
@@ -172,8 +196,11 @@ user = os.environ["AMBARI_USER"]
 password = os.environ["AMBARI_PASSWORD"]
 cluster = os.environ["CLUSTER_NAME"]
 banned = os.environ["BANNED_USERS"].strip()
-map_opts = os.environ["MAPREDUCE_MAP_JAVA_OPTS"].strip()
-tez_am_mb = os.environ["TEZ_AM_RESOURCE_MEMORY_MB"].strip()
+map_mb_override = os.environ.get("MAPREDUCE_MAP_MEMORY_MB", "").strip()
+map_opts_override = os.environ.get("MAPREDUCE_MAP_JAVA_OPTS", "").strip()
+tez_am_mb_override = os.environ.get("TEZ_AM_RESOURCE_MEMORY_MB", "").strip()
+tez_am_opts_override = os.environ.get("TEZ_AM_JAVA_OPTS", "").strip()
+force_unsafe = os.environ.get("FORCE_UNSAFE_SIZING", "0") == "1"
 skip_banned = os.environ.get("SKIP_BANNED_USERS", "0") == "1"
 skip_map = os.environ.get("SKIP_MAP_JAVA_OPTS", "0") == "1"
 skip_tez = os.environ.get("SKIP_TEZ_AM_MEMORY", "0") == "1"
@@ -250,6 +277,84 @@ qc = urllib.parse.quote(cluster, safe="")
 changed = False
 
 # ---------------------------------------------------------------------------
+# Container sizing, derived from what the NodeManagers actually offer
+# ---------------------------------------------------------------------------
+HEAP_FRACTION = 0.8
+
+def parse_xmx_mb(opts):
+    m = re.search(r"-Xmx(\d+)([kKmMgG]?)", opts or "")
+    if not m:
+        return None
+    size, unit = int(m.group(1)), m.group(2).lower()
+    return {"k": size // 1024, "m": size, "g": size * 1024, "": size // (1024 * 1024)}[unit]
+
+def as_int(value, default):
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+
+def unsafe(message):
+    if force_unsafe:
+        print(f"[WARN] {message}")
+        print("[WARN] FORCE_UNSAFE_SIZING=1; applying anyway.")
+        return
+    raise SystemExit(
+        f"[ERROR] {message}\n"
+        "[ERROR] Refusing to apply. Pick sizes that fit a NodeManager, or set "
+        "FORCE_UNSAFE_SIZING=1 to override."
+    )
+
+_, yarn_props, _ = get_config(qc, "yarn-site")
+nm_mb = as_int(yarn_props.get("yarn.nodemanager.resource.memory-mb"), 0)
+max_alloc_mb = as_int(yarn_props.get("yarn.scheduler.maximum-allocation-mb"), nm_mb)
+min_alloc_mb = as_int(yarn_props.get("yarn.scheduler.minimum-allocation-mb"), 1024)
+if nm_mb <= 0:
+    raise SystemExit("[ERROR] could not read yarn.nodemanager.resource.memory-mb")
+if min_alloc_mb <= 0:
+    min_alloc_mb = 1024
+print(
+    f"[INFO] NodeManager memory={nm_mb}MB "
+    f"(allocation limits {min_alloc_mb}MB..{max_alloc_mb}MB)"
+)
+
+# A quarter of a node keeps several containers schedulable per NodeManager, and
+# the half-node ceiling is what stops an AM from needing an otherwise idle node.
+def derive_container_mb():
+    target = -(-(nm_mb // 4) // min_alloc_mb) * min_alloc_mb
+    ceiling = max(min_alloc_mb, min(max_alloc_mb, nm_mb // 2))
+    return max(min_alloc_mb, min(target, ceiling))
+
+def check_container_mb(label, container_mb):
+    if container_mb > max_alloc_mb:
+        unsafe(
+            f"{label} container {container_mb}MB exceeds "
+            f"yarn.scheduler.maximum-allocation-mb ({max_alloc_mb}MB); YARN rejects the request"
+        )
+    elif container_mb > nm_mb // 2:
+        unsafe(
+            f"{label} container {container_mb}MB needs more than half of a "
+            f"{nm_mb}MB NodeManager, so it stays pending unless a node is nearly idle"
+        )
+
+def check_heap(label, opts, container_mb):
+    heap_mb = parse_xmx_mb(opts)
+    if heap_mb is None:
+        print(f"[WARN] no -Xmx found in {label} java opts; leaving heap untouched")
+        return
+    if heap_mb > int(container_mb * 0.9):
+        unsafe(
+            f"{label} heap {heap_mb}MB does not fit in its {container_mb}MB "
+            "container; YARN kills the container for exceeding physical memory"
+        )
+
+def apply_heap(opts, container_mb):
+    heap = f"-Xmx{int(container_mb * HEAP_FRACTION)}m"
+    if re.search(r"-Xmx\S+", opts or ""):
+        return re.sub(r"-Xmx\S+", heap, opts, count=1)
+    return f"{opts} {heap}".strip() if opts else heap
+
+# ---------------------------------------------------------------------------
 # 1) container-executor: banned.users
 # ---------------------------------------------------------------------------
 if not skip_banned:
@@ -287,54 +392,66 @@ else:
     print("[INFO] SKIP_BANNED_USERS=1; skipping container-executor update")
 
 # ---------------------------------------------------------------------------
-# 2) mapred-site: mapreduce.map.java.opts
+# 2) mapred-site: map container size and matching heap
 # ---------------------------------------------------------------------------
-if not skip_map:
-    config_type = "mapred-site"
-    prop_key = "mapreduce.map.java.opts"
+def update_sizing(config_type, mem_key, opts_key, label, mb_override, opts_override):
     old_tag, props, attrs = get_config(qc, config_type)
     print(f"[INFO] Current {config_type} tag: {old_tag}")
-    if prop_key not in props:
-        raise SystemExit(f"[ERROR] property '{prop_key}' missing on {config_type}")
+    for key in (mem_key, opts_key):
+        if key not in props:
+            raise SystemExit(f"[ERROR] property '{key}' missing on {config_type}")
 
-    old_value = props[prop_key]
-    print(f"[INFO] Current {prop_key}={old_value}")
-    if old_value == map_opts:
-        print(f"[INFO] {prop_key} already set to {map_opts}; skipping.")
+    old_mb = str(props[mem_key]).strip()
+    old_opts = props[opts_key]
+    print(f"[INFO] Current {mem_key}={old_mb}")
+    print(f"[INFO] Current {opts_key}={old_opts}")
+
+    container_mb = as_int(mb_override, 0) if mb_override else derive_container_mb()
+    if mb_override and container_mb <= 0:
+        raise SystemExit(f"[ERROR] {mem_key} override is not a number: {mb_override!r}")
+    check_container_mb(label, container_mb)
+
+    if opts_override:
+        new_opts = (
+            re.sub(r"-Xmx\S+", opts_override, old_opts, count=1)
+            if re.fullmatch(r"-Xmx\d+[kKmMgG]?", opts_override) and re.search(r"-Xmx\S+", old_opts)
+            else opts_override
+        )
+        check_heap(label, new_opts, container_mb)
     else:
-        # If caller passed only -XmxNNNm and current value has -Xmx..., replace in place
-        # so any extra JVM opts are preserved. Otherwise set the property wholesale.
-        if re.fullmatch(r"-Xmx\d+[mMgGkK]?", map_opts) and re.search(r"-Xmx\S+", old_value):
-            new_value = re.sub(r"-Xmx\S+", map_opts, old_value, count=1)
-        else:
-            new_value = map_opts
+        new_opts = apply_heap(old_opts, container_mb)
 
-        print(f"[INFO] New {prop_key}={new_value}")
-        props[prop_key] = new_value
-        put_config(qc, config_type, props, attrs, f"Set {prop_key}={new_value}")
+    if old_mb == str(container_mb) and old_opts == new_opts:
+        print(f"[INFO] {config_type} already sized for {label}; skipping.")
+        return False
+
+    print(f"[INFO] New {mem_key}={container_mb}")
+    print(f"[INFO] New {opts_key}={new_opts}")
+    props[mem_key] = str(container_mb)
+    props[opts_key] = new_opts
+    put_config(
+        qc, config_type, props, attrs,
+        f"Fit {label} within {nm_mb}MB NodeManagers ({mem_key}={container_mb})",
+    )
+    return True
+
+if not skip_map:
+    if update_sizing(
+        "mapred-site", "mapreduce.map.memory.mb", "mapreduce.map.java.opts",
+        "MR map", map_mb_override, map_opts_override,
+    ):
         changed = True
 else:
     print("[INFO] SKIP_MAP_JAVA_OPTS=1; skipping mapred-site update")
 
 # ---------------------------------------------------------------------------
-# 3) tez-site: tez.am.resource.memory.mb
+# 3) tez-site: Tez AM container size and matching heap
 # ---------------------------------------------------------------------------
 if not skip_tez:
-    config_type = "tez-site"
-    prop_key = "tez.am.resource.memory.mb"
-    old_tag, props, attrs = get_config(qc, config_type)
-    print(f"[INFO] Current {config_type} tag: {old_tag}")
-    if prop_key not in props:
-        raise SystemExit(f"[ERROR] property '{prop_key}' missing on {config_type}")
-
-    old_value = str(props[prop_key]).strip()
-    print(f"[INFO] Current {prop_key}={old_value}")
-    if old_value == tez_am_mb:
-        print(f"[INFO] {prop_key} already set to {tez_am_mb}; skipping.")
-    else:
-        print(f"[INFO] New {prop_key}={tez_am_mb}")
-        props[prop_key] = tez_am_mb
-        put_config(qc, config_type, props, attrs, f"Set {prop_key}={tez_am_mb}")
+    if update_sizing(
+        "tez-site", "tez.am.resource.memory.mb", "tez.am.java.opts",
+        "Tez AM", tez_am_mb_override, tez_am_opts_override,
+    ):
         changed = True
 else:
     print("[INFO] SKIP_TEZ_AM_MEMORY=1; skipping tez-site update")
