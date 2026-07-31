@@ -260,9 +260,13 @@ oz() {
   "$OZONE_BIN" "$@"
 }
 
+http_code_of() {
+  curl -s -o /dev/null $CURL_EXTRA_OPTS --negotiate -u : -w '%{http_code}' "$1" 2>/dev/null || echo 000
+}
+
 http_check() {
   local label="$1" url="$2" code
-  code="$(curl -s -o /dev/null $CURL_EXTRA_OPTS --negotiate -u : -w '%{http_code}' "$url" 2>/dev/null || echo 000)"
+  code="$(http_code_of "$url")"
   case "$code" in
     2??|3??)
       echo "        OK ${url} -> HTTP ${code}"
@@ -270,6 +274,38 @@ http_check() {
       ;;
     *)
       echo "        ${url} -> HTTP ${code}" >&2
+      record_fail "${label} (HTTP ${code})"
+      ;;
+  esac
+}
+
+# The S3 Gateway serves the S3 REST API at "/", so GET / is ListBuckets and
+# answers 403 without an AWS SigV4 signature - SPNEGO does not supply one.
+# Probe the admin servlet instead, and fall back to treating 401/403 on "/"
+# as proof the gateway is up and enforcing auth.
+s3g_http_check() {
+  local label="$1" base="$2" code
+  code="$(http_code_of "${base}/jmx")"
+  case "$code" in
+    2??|3??)
+      echo "        OK ${base}/jmx -> HTTP ${code}"
+      record_pass "$label"
+      return
+      ;;
+  esac
+
+  code="$(http_code_of "${base}/")"
+  case "$code" in
+    2??|3??)
+      echo "        OK ${base}/ -> HTTP ${code}"
+      record_pass "$label"
+      ;;
+    401|403)
+      echo "        OK ${base}/ -> HTTP ${code} (S3 API requires AWS SigV4; gateway up, auth enforced)"
+      record_pass "$label"
+      ;;
+    *)
+      echo "        ${base}/ -> HTTP ${code}" >&2
       record_fail "${label} (HTTP ${code})"
       ;;
   esac
@@ -397,7 +433,7 @@ else
     http_check "scm web ${h}" "http://${h}:${scm_http_port:-9876}/"
   done
   for h in ${s3g_hosts:-}; do
-    http_check "s3g web ${h}" "http://${h}:${s3g_http_port:-9878}/"
+    s3g_http_check "s3g web ${h}" "http://${h}:${s3g_http_port:-9878}"
   done
   for h in ${recon_hosts:-}; do
     http_check "recon web ${h}" "http://${h}:${recon_port:-9898}/"

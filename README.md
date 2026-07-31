@@ -165,6 +165,7 @@ Copy from `configs/sqoop.env.example` if you need non-default JDBC host, user, o
 | `nifi-registry-sample-smoke.sh` | NiFi Registry REST (anonymous over HTTP, SPNEGO over HTTPS) | Host that can reach the Registry (`61080` / `61443`) |
 | `jupyterhub-sample-smoke.sh` | JupyterHub form login (**`JUPYTERHUB_PASSWORD`**; Ambari-discovered by default) | Host that can reach JupyterHub (`8000`) |
 | `knox-sample-smoke.sh` | Knox gateway HTTP basic against the topology's identity store (**`KNOX_PASSWORD`**; Ambari-discovered by default) | Host that can reach the gateway (`8443`) |
+| `ambari-quicklinks-ui-smoke.sh` | Ambari admin REST to resolve every service Quick Link, then HTTP probe | Host that can reach Ambari and the service UI ports |
 | `infra-solr-sample-smoke.sh` | **`infra-solr/<FQDN>`** + Infra Solr service keytab over SPNEGO (plus a **`dev`**-role keytab for the query read-back) | An **`INFRA_SOLR`** host (`8886`), as root for the keytab |
 | `zookeeper-sample-smoke.sh` | Four-letter words and AdminServer need no auth; the `zkCli.sh` data path uses the ticket cache (**`ambari-qa-<cluster>`** + smokeuser keytab) | Host that can reach `2181` on every **`ZOOKEEPER_SERVER`**, as root for the keytab |
 
@@ -721,6 +722,32 @@ KNOX_SKIP_AUTH=0 ./knox-sample-smoke.sh
 - **Ranger.** The Knox plugin is enabled here, so a `403` on an authenticated call is an authorization decision rather than a gateway problem - check the `knox` service policies in Ranger.
 
 **Env:** `KNOX_URL`, `KNOX_TOPOLOGY_PROBES`, `KNOX_USER`, `KNOX_PASSWORD`, `KNOX_LDAP_URL`, `KNOX_SKIP_AUTH`, `KNOX_SKIP_WEBHDFS`, `KNOX_WEBHDFS_TOPOLOGY`, `CURL_EXTRA_OPTS`, Ambari vars.
+
+---
+
+## `ambari-quicklinks-ui-smoke.sh`
+
+Resolves Ambari **Quick Links** for every STARTED service (NameNode UI, ResourceManager UI, Ranger, Hue, Zeppelin, ...) the same way Ambari builds them, then HTTP-probes each URL.
+
+- Discovers cluster name, stack version, host IPs, component placement, and current configs from Ambari.
+- Default `UI_LINK_MODE=ui` keeps main web consoles; set `all` to also probe logs/JMX/thread stacks.
+- Default `UI_USE_IP=1` rewrites hostnames to Ambari-reported IPs so clients without cluster DNS still work.
+- On Kerberos clusters, HTTP `401`/`403` still means the UI port is up (`UI_ACCEPT_AUTH=1`).
+- Optional components that are not installed (for example Cruise Control, Grafana) are **SKIPPED**, not failed.
+
+```bash
+# All STARTED-service Quick Link UIs:
+AMBARI_BASE_URL=http://10.101.11.138:8080 AMBARI_USER=admin AMBARI_PASSWORD=admin \
+  ./ambari-quicklinks-ui-smoke.sh
+
+# Subset:
+UI_SERVICES=HDFS,YARN,RANGER,HUE ./ambari-quicklinks-ui-smoke.sh
+
+# Write a TSV report:
+UI_REPORT_FILE=reports/quicklinks-ui.tsv ./ambari-quicklinks-ui-smoke.sh
+```
+
+**Env:** `AMBARI_*`, `CLUSTER_NAME`, `UI_SERVICES`, `UI_SKIP_SERVICES`, `UI_LINK_MODE`, `UI_USE_IP`, `UI_ACCEPT_AUTH`, `UI_CONNECT_TIMEOUT`, `UI_MAX_TIME`, `UI_PROBE_AMBARI`, `UI_INCLUDE_NOT_STARTED`, `UI_REPORT_FILE`, `CURL_EXTRA_OPTS`.
 
 ---
 

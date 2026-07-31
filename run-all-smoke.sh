@@ -89,6 +89,7 @@ SMOKE_TESTS=(
   ozone-sample-smoke.sh
 
   # Web services, gateways, and operational integrations.
+  ambari-quicklinks-ui-smoke.sh
   zeppelin-editors-smoke.sh
   airflow-sample-smoke.sh
   nifi-sample-smoke.sh
