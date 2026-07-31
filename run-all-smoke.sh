@@ -90,6 +90,7 @@ SMOKE_TESTS=(
 
   # Web services, gateways, and operational integrations.
   ambari-quicklinks-ui-smoke.sh
+  ambari-service-checks-smoke.sh
   zeppelin-editors-smoke.sh
   airflow-sample-smoke.sh
   nifi-sample-smoke.sh

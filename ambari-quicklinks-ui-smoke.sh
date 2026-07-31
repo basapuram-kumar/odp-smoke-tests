@@ -37,10 +37,12 @@
 #   UI_SERVICES=HDFS,YARN,RANGER ./ambari-quicklinks-ui-smoke.sh
 #   UI_LINK_MODE=all ./ambari-quicklinks-ui-smoke.sh
 #
+# Ambari URL/user/password are read from configs/ambari.env or configs/ambari.config
+# (or AMBARI_CONFIG_FILE). Shell exports still override the file.
+#
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-AMBARI_CONFIG_FILE="${AMBARI_CONFIG_FILE:-${SCRIPT_DIR}/configs/ambari.env}"
 
 die() {
   echo "[ERROR] $*" >&2
@@ -84,6 +86,24 @@ load_env_file() {
       CLUSTER_NAME) _cfg_CLUSTER_NAME="$val" ;;
     esac
   done <"$f"
+}
+
+resolve_ambari_config_file() {
+  local f
+  if [[ -n "${AMBARI_CONFIG_FILE:-}" ]]; then
+    [[ -f "$AMBARI_CONFIG_FILE" ]] || die "AMBARI_CONFIG_FILE not found: $AMBARI_CONFIG_FILE"
+    printf '%s' "$AMBARI_CONFIG_FILE"
+    return 0
+  fi
+  for f in \
+    "${SCRIPT_DIR}/configs/ambari.env" \
+    "${SCRIPT_DIR}/configs/ambari.config"; do
+    if [[ -f "$f" ]]; then
+      printf '%s' "$f"
+      return 0
+    fi
+  done
+  return 1
 }
 
 PASS_N=0
@@ -146,14 +166,19 @@ _cfg_AMBARI_USER=""
 _cfg_AMBARI_PASSWORD=""
 _cfg_CLUSTER_NAME=""
 
-if [[ -f "$AMBARI_CONFIG_FILE" ]]; then
-  load_env_file "$AMBARI_CONFIG_FILE"
-fi
+AMBARI_CONFIG_FILE="$(resolve_ambari_config_file)" || \
+  die "Missing Ambari config. Create configs/ambari.env (or configs/ambari.config) from configs/ambari.env.example."
 
-AMBARI_BASE_URL="${AMBARI_BASE_URL:-${_cfg_AMBARI_BASE_URL:-http://10.101.11.138:8080}}"
+load_env_file "$AMBARI_CONFIG_FILE"
+
+AMBARI_BASE_URL="${AMBARI_BASE_URL:-${_cfg_AMBARI_BASE_URL:-}}"
 AMBARI_USER="${AMBARI_USER:-${_cfg_AMBARI_USER:-}}"
 AMBARI_PASSWORD="${AMBARI_PASSWORD:-${_cfg_AMBARI_PASSWORD:-}}"
 CLUSTER_NAME="${CLUSTER_NAME:-${_cfg_CLUSTER_NAME:-}}"
+
+[[ -n "$AMBARI_BASE_URL" ]] || die "AMBARI_BASE_URL is empty in ${AMBARI_CONFIG_FILE}"
+[[ -n "$AMBARI_USER" && -n "$AMBARI_PASSWORD" ]] || \
+  die "AMBARI_USER / AMBARI_PASSWORD missing in ${AMBARI_CONFIG_FILE}"
 
 UI_SERVICES="${UI_SERVICES:-}"
 UI_SKIP_SERVICES="${UI_SKIP_SERVICES:-}"
@@ -176,11 +201,9 @@ case "$UI_ACCEPT_AUTH" in 0|1) ;; *) die "UI_ACCEPT_AUTH must be 0 or 1" ;; esac
 case "$UI_PROBE_AMBARI" in 0|1) ;; *) die "UI_PROBE_AMBARI must be 0 or 1" ;; esac
 case "$UI_INCLUDE_NOT_STARTED" in 0|1) ;; *) die "UI_INCLUDE_NOT_STARTED must be 0 or 1" ;; esac
 
-[[ -n "$AMBARI_USER" && -n "$AMBARI_PASSWORD" ]] || \
-  die "Missing Ambari credentials. Create ${AMBARI_CONFIG_FILE} (copy from ${SCRIPT_DIR}/configs/ambari.env.example) or set AMBARI_USER and AMBARI_PASSWORD."
-
 echo "[INFO] Ambari Quick Links UI smoke"
-echo "[INFO] Ambari: ${AMBARI_BASE_URL}"
+echo "[INFO] Config: ${AMBARI_CONFIG_FILE}"
+echo "[INFO] Ambari: ${AMBARI_BASE_URL} (user=${AMBARI_USER})"
 echo "[INFO] link mode: ${UI_LINK_MODE}  use_ip: ${UI_USE_IP}  accept_auth: ${UI_ACCEPT_AUTH}"
 
 RESOLVED_JSON="$(

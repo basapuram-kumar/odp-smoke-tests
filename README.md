@@ -8,16 +8,24 @@ Shell helpers to run small end-to-end checks against Hadoop ecosystem components
 
 ## Configuration
 
-### `configs/ambari.env` (create from example)
+### `configs/ambari.env` / `configs/ambari.config` (create from example)
 
-Used by scripts that call Ambari (cluster name, Kudu master discovery, etc.).
+Used by Ambari smoke scripts (Quick Links UI, Service Checks, and others). Both filenames are accepted; `ambari.env` is preferred when both exist. Both are gitignored.
 
 ```bash
 cp configs/ambari.env.example configs/ambari.env
-# edit credentials and URL if needed
+# edit AMBARI_BASE_URL / AMBARI_USER / AMBARI_PASSWORD if needed
 ```
 
-`configs/ambari.env` is gitignored. Variables: `AMBARI_BASE_URL`, `AMBARI_USER`, `AMBARI_PASSWORD`.
+Variables: `AMBARI_BASE_URL`, `AMBARI_USER`, `AMBARI_PASSWORD` (optional `CLUSTER_NAME`).
+
+After that, run scripts with no Ambari credentials on the command line:
+
+```bash
+./ambari-quicklinks-ui-smoke.sh
+./ambari-service-checks-smoke.sh
+SC_SERVICES=HDFS,YARN,ZOOKEEPER ./ambari-service-checks-smoke.sh
+```
 
 ### `configs/ranger.env` (optional, for Ranger REST scripts)
 
@@ -166,6 +174,7 @@ Copy from `configs/sqoop.env.example` if you need non-default JDBC host, user, o
 | `jupyterhub-sample-smoke.sh` | JupyterHub form login (**`JUPYTERHUB_PASSWORD`**; Ambari-discovered by default) | Host that can reach JupyterHub (`8000`) |
 | `knox-sample-smoke.sh` | Knox gateway HTTP basic against the topology's identity store (**`KNOX_PASSWORD`**; Ambari-discovered by default) | Host that can reach the gateway (`8443`) |
 | `ambari-quicklinks-ui-smoke.sh` | Ambari admin REST to resolve every service Quick Link, then HTTP probe | Host that can reach Ambari and the service UI ports |
+| `ambari-service-checks-smoke.sh` | Ambari admin REST: trigger + monitor each service check request | Host that can reach Ambari (checks run on cluster hosts) |
 | `infra-solr-sample-smoke.sh` | **`infra-solr/<FQDN>`** + Infra Solr service keytab over SPNEGO (plus a **`dev`**-role keytab for the query read-back) | An **`INFRA_SOLR`** host (`8886`), as root for the keytab |
 | `zookeeper-sample-smoke.sh` | Four-letter words and AdminServer need no auth; the `zkCli.sh` data path uses the ticket cache (**`ambari-qa-<cluster>`** + smokeuser keytab) | Host that can reach `2181` on every **`ZOOKEEPER_SERVER`**, as root for the keytab |
 
@@ -736,9 +745,8 @@ Resolves Ambari **Quick Links** for every STARTED service (NameNode UI, Resource
 - Optional components that are not installed (for example Cruise Control, Grafana) are **SKIPPED**, not failed.
 
 ```bash
-# All STARTED-service Quick Link UIs:
-AMBARI_BASE_URL=http://10.101.11.138:8080 AMBARI_USER=admin AMBARI_PASSWORD=admin \
-  ./ambari-quicklinks-ui-smoke.sh
+# All STARTED-service Quick Link UIs (reads configs/ambari.env):
+./ambari-quicklinks-ui-smoke.sh
 
 # Subset:
 UI_SERVICES=HDFS,YARN,RANGER,HUE ./ambari-quicklinks-ui-smoke.sh
@@ -748,6 +756,32 @@ UI_REPORT_FILE=reports/quicklinks-ui.tsv ./ambari-quicklinks-ui-smoke.sh
 ```
 
 **Env:** `AMBARI_*`, `CLUSTER_NAME`, `UI_SERVICES`, `UI_SKIP_SERVICES`, `UI_LINK_MODE`, `UI_USE_IP`, `UI_ACCEPT_AUTH`, `UI_CONNECT_TIMEOUT`, `UI_MAX_TIME`, `UI_PROBE_AMBARI`, `UI_INCLUDE_NOT_STARTED`, `UI_REPORT_FILE`, `CURL_EXTRA_OPTS`.
+
+---
+
+## `ambari-service-checks-smoke.sh`
+
+Triggers Ambari **Run Service Check** for each eligible service (same API as the Ambari UI / `ambari-llm-agent`), waits for each request to finish, and prints a PASS/FAIL/SKIPPED summary.
+
+- Discovers services with `service_check_supported=true` on the stack.
+- Default: only **STARTED** services. Set `SC_INCLUDE_NOT_STARTED=1` to include INSTALLED client services (TEZ, SQOOP, KERBEROS, ...).
+- Uses `ZOOKEEPER_QUORUM_SERVICE_CHECK` for ZooKeeper; `{SERVICE}_SERVICE_CHECK` for everything else.
+- Polls Ambari request status until `COMPLETED` / `FAILED` / `ABORTED` / `TIMEDOUT` (or `SC_TIMEOUT_SECONDS`).
+- Failed checks include task stderr snippets in the summary and optional TSV report.
+- Full-cluster runs can take a long time (Hive/Oozie especially). Prefer `SC_SERVICES=...` for a focused pass.
+
+```bash
+# All STARTED services that support service checks (reads configs/ambari.env):
+./ambari-service-checks-smoke.sh
+
+# Focused set:
+SC_SERVICES=HDFS,YARN,ZOOKEEPER,MAPREDUCE2 ./ambari-service-checks-smoke.sh
+
+# Parallel (use carefully) + TSV report:
+SC_PARALLEL=3 SC_REPORT_FILE=reports/service-checks.tsv ./ambari-service-checks-smoke.sh
+```
+
+**Env:** `AMBARI_*`, `CLUSTER_NAME`, `SC_SERVICES`, `SC_SKIP_SERVICES`, `SC_INCLUDE_NOT_STARTED`, `SC_PARALLEL`, `SC_POLL_SECONDS`, `SC_TIMEOUT_SECONDS`, `SC_STAGGER_SECONDS`, `SC_FAIL_FAST`, `SC_REPORT_FILE`, `CURL_EXTRA_OPTS`.
 
 ---
 
