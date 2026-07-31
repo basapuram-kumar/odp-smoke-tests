@@ -691,6 +691,17 @@ NIFI_REGISTRY_SKIP_WRITE=1 ./nifi-registry-sample-smoke.sh
 - **Authenticated:** form login, then `/hub/api/user` (identity + admin flag), `/hub/api/info` (spawner and authenticator class), `/hub/api/users`.
 - **Single-user server:** spawn via `POST /hub/api/users/<user>/server`, poll until `ready`, query the notebook server's `/api` (version) and `/api/kernelspecs` (default kernel), then stop it. A cleanup trap stops the server even if a check fails.
 
+**Host pre-reqs (before Ambari install):**
+
+```bash
+# RHEL 8 / 9 (Python 3.8 + Node.js 20 + configurable-http-proxy):
+# https://docs.acceldata.io/odp/odp-3.2.3.5-2/documentation/jupyter-prerequisites
+sudo ./prereqs/install-jupyterhub-prereqs-rhel8.sh
+
+# Ubuntu 20.04 / 22.04:
+sudo ./prereqs/install-jupyterhub-prereqs-ubuntu20.sh
+```
+
 ```bash
 ./jupyterhub-sample-smoke.sh
 
@@ -874,6 +885,11 @@ INFRA_SOLR_KEEP_COLLECTION=1 sudo -E ./infra-solr-sample-smoke.sh
 ```
 sample-jobs/
   README.md                 # this file
+  prereqs/
+    install-jupyterhub-prereqs-rhel8.sh
+    install-jupyterhub-prereqs-ubuntu20.sh
+    install-airflow-prereqs-*.sh
+    install-pinot-prereqs-*.sh
   configs/
     ambari.env.example
     hive.env.example
