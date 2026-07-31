@@ -86,6 +86,7 @@ SMOKE_TESTS=(
   sqoop-smoke-test.sh
   clickhouse-sample-smoke.sh
   druid-sample-smoke.sh
+  pinot-sample-smoke.sh
   ozone-sample-smoke.sh
 
   # Web services, gateways, and operational integrations.
@@ -96,6 +97,7 @@ SMOKE_TESTS=(
   nifi-sample-smoke.sh
   nifi-registry-sample-smoke.sh
   jupyterhub-sample-smoke.sh
+  hue-sample-smoke.sh
   knox-sample-smoke.sh
   infra-solr-sample-smoke.sh
   ranger-plugin-connection-smoke.sh

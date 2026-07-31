@@ -78,6 +78,15 @@ cp configs/druid.env.example configs/druid.env
 
 `druid.env` is gitignored.
 
+### `configs/pinot.env` (optional, for `pinot-sample-smoke.sh`)
+
+```bash
+cp configs/pinot.env.example configs/pinot.env
+# optionally set PINOT_CONTROLLER_URL / PINOT_SKIP_INGEST
+```
+
+`pinot.env` is gitignored.
+
 ### `configs/ozone.env` (optional, for `ozone-sample-smoke.sh`)
 
 ```bash
@@ -105,6 +114,15 @@ cp configs/jupyterhub.env.example configs/jupyterhub.env
 ```
 
 `jupyterhub.env` is gitignored.
+
+### `configs/hue.env` (optional, for `hue-sample-smoke.sh`)
+
+```bash
+cp configs/hue.env.example configs/hue.env
+# set HUE_USER / HUE_PASSWORD if they differ from hue/hue
+```
+
+`hue.env` is gitignored.
 
 ### `configs/knox.env` (optional, for `knox-sample-smoke.sh`)
 
@@ -168,10 +186,12 @@ Copy from `configs/sqoop.env.example` if you need non-default JDBC host, user, o
 | `airflow-sample-smoke.sh` | **`airflow-<cluster>`** headless keytab (optional) + Airflow CLI / health | Airflow host (`AIRFLOW_HOME` venv; web `:8889`) |
 | `clickhouse-sample-smoke.sh` | ClickHouse HTTP (`default` user; optional Kerberos / native client) | Host that can reach ClickHouse HTTP (`8123`) |
 | `druid-sample-smoke.sh` | **`druid-<cluster>`** headless keytab + SPNEGO REST (health, SQL, ingest) | Host that can reach Broker/Coordinator/Overlord |
+| `pinot-sample-smoke.sh` | Pinot REST (optional basic auth; health, schema/table, ingest, SQL) | Host that can reach Controller/Broker (and Server/Minion) |
 | `ozone-sample-smoke.sh` | **`hdfs-<cluster>`** + Ozone headless keytab (CLI data path, HA roles, SPNEGO web) | Host with the **`ozone`** client |
 | `nifi-sample-smoke.sh` | NiFi REST (anonymous over HTTP, SPNEGO over HTTPS) | Host that can reach NiFi (`9090` / `9091`) |
 | `nifi-registry-sample-smoke.sh` | NiFi Registry REST (anonymous over HTTP, SPNEGO over HTTPS) | Host that can reach the Registry (`61080` / `61443`) |
 | `jupyterhub-sample-smoke.sh` | JupyterHub form login (**`JUPYTERHUB_PASSWORD`**; Ambari-discovered by default) | Host that can reach JupyterHub (`8000`) |
+| `hue-sample-smoke.sh` | Hue form login (**`HUE_USER`** / **`HUE_PASSWORD`**; Ambari-discovered by default) | Host that can reach Hue UI (`8888`) |
 | `knox-sample-smoke.sh` | Knox gateway HTTP basic against the topology's identity store (**`KNOX_PASSWORD`**; Ambari-discovered by default) | Host that can reach the gateway (`8443`) |
 | `ambari-quicklinks-ui-smoke.sh` | Ambari admin REST to resolve every service Quick Link, then HTTP probe | Host that can reach Ambari and the service UI ports |
 | `ambari-service-checks-smoke.sh` | Ambari admin REST: trigger + monitor each service check request | Host that can reach Ambari (checks run on cluster hosts) |
@@ -617,6 +637,24 @@ DRUID_SKIP_INGEST=1 sudo -E ./druid-sample-smoke.sh
 
 ---
 
+## `pinot-sample-smoke.sh`
+
+- **Goal:** Pinot role **health** (`/health` -> `OK`), Controller **instances/tables**, then optional **schema + OFFLINE table**, **`/ingestFromFile`** of 3 JSON rows, and Broker **SQL `COUNT(*)=3`**.
+- Discovers Controller / Broker / Server / Minion from Ambari (ports from `pinot-*-conf`, defaults controller **9000**, broker **8099**, server admin **8097**, minion **9514**). Reads `enable_ssl` / `basic_auth` from `pinot-env`.
+- Specs: `pinot/odp_pinot_smoke_schema.json`, `pinot/odp_pinot_smoke_table.json`.
+- Host pre-reqs: `prereqs/install-pinot-prereqs-*.sh` (JDK 11 + Python `requests`).
+
+```bash
+./pinot-sample-smoke.sh
+
+# Health + listing only:
+PINOT_SKIP_INGEST=1 ./pinot-sample-smoke.sh
+```
+
+**Env:** `PINOT_CONTROLLER_URL`, `PINOT_BROKER_URL`, `PINOT_SERVER_URL`, `PINOT_MINION_URL`, `PINOT_CONTROLLER_SSL`, `PINOT_BASIC_AUTH`, `PINOT_USER`, `PINOT_PASSWORD`, `PINOT_SKIP_INGEST`, `PINOT_TABLE`, `PINOT_KEEP_TABLE`, `PINOT_TIMEOUT_SECONDS`, `CURL_EXTRA_OPTS`, Ambari vars.
+
+---
+
 ## `ozone-sample-smoke.sh`
 
 - **HA roles:** `ozone admin om roles --service-id=<id>` and `ozone admin scm roles`.
@@ -717,6 +755,23 @@ JUPYTERHUB_SKIP_SPAWN=1 ./jupyterhub-sample-smoke.sh
 - **Login redirect:** the login `POST` answers `302`. Redirects are not followed, because curl would replay the `POST` against the redirect target and get a `403`.
 
 **Env:** `JUPYTERHUB_URL`, `JUPYTERHUB_BASE_URL`, `JUPYTERHUB_USER`, `JUPYTERHUB_PASSWORD`, `JUPYTERHUB_SKIP_SPAWN`, `JUPYTERHUB_KEEP_SERVER`, `JUPYTERHUB_SPAWN_TIMEOUT`, `JUPYTERHUB_POLL_SECONDS`, `CURL_EXTRA_OPTS`, Ambari vars.
+
+---
+
+## `hue-sample-smoke.sh`
+
+- Discovers Ambari **`HUE_SERVER`** host, **`hue-env` `http_port`** (default **8888**), **`hue-desktop-site` `ssl_enable`**, and the auth backend from **`hue-auth-site`**.
+- **Unauthenticated:** `/desktop/debug/is_alive`, `GET /` redirect to login, `/hue/accounts/login/` (CSRF token present).
+- **Authenticated:** Django form login, then `/desktop/api2/get_config` (app list), `/useradmin/api/get_users`, `/notebook/api/get_history`.
+
+```bash
+./hue-sample-smoke.sh
+
+# Liveness + login page only:
+HUE_SKIP_AUTH=1 ./hue-sample-smoke.sh
+```
+
+**Env:** `HUE_URL`, `HUE_HOST`, `HUE_PORT`, `HUE_SSL`, `HUE_USER`, `HUE_PASSWORD`, `HUE_SKIP_AUTH`, `CURL_EXTRA_OPTS`, Ambari vars.
 
 ---
 
@@ -904,6 +959,9 @@ sample-jobs/
     hive/hive_smoke.hql
   druid/
     odp_druid_smoke_index.json
+  pinot/
+    odp_pinot_smoke_schema.json
+    odp_pinot_smoke_table.json
   sql/
     hive-sample-smoke.sql
     hive-spark2-compat-*.sql
