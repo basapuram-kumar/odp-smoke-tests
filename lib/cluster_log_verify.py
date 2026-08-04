@@ -5,9 +5,9 @@ Cluster service/component log verification.
 Discovers STARTED host-components from Ambari, SSHs to each host, optionally
 restarts the component, and verifies that /var/log/<service> (or mapped) logs
 exist and are generating. Emits a markdown + TSV report.
-"""
 
-from __future__ import annotations
+Compatible with Python 3.6+ (RHEL 8 system python3).
+"""
 
 import argparse
 import base64
@@ -21,7 +21,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -274,42 +273,42 @@ SERVICE_LOG_DIR_FALLBACKS: Dict[str, List[str]] = {
 }
 
 
-@dataclass
-class HostComponent:
-    service: str
-    component: str
-    host_name: str
-    host_ip: str
-    state: str
+class HostComponent(object):
+    def __init__(self, service, component, host_name, host_ip, state):
+        self.service = service
+        self.component = component
+        self.host_name = host_name
+        self.host_ip = host_ip
+        self.state = state
 
 
-@dataclass
-class LogFileInfo:
-    path: str
-    size: int
-    mtime: float
+class LogFileInfo(object):
+    def __init__(self, path, size, mtime):
+        self.path = path
+        self.size = size
+        self.mtime = mtime
 
 
-@dataclass
-class ComponentResult:
-    service: str
-    component: str
-    host_name: str
-    host_ip: str
-    state_before: str
-    log_dirs_found: List[str] = field(default_factory=list)
-    log_files_before: List[LogFileInfo] = field(default_factory=list)
-    log_files_after: List[LogFileInfo] = field(default_factory=list)
-    restarted: bool = False
-    restart_ok: Optional[bool] = None
-    restart_request_id: Optional[str] = None
-    restart_error: str = ""
-    logs_exist: bool = False
-    logs_generating: Optional[bool] = None
-    missing_log: bool = False
-    errors_found: List[str] = field(default_factory=list)
-    status: str = "UNKNOWN"  # PASS / FAIL / WARN / SKIPPED
-    notes: List[str] = field(default_factory=list)
+class ComponentResult(object):
+    def __init__(self, service, component, host_name, host_ip, state_before):
+        self.service = service
+        self.component = component
+        self.host_name = host_name
+        self.host_ip = host_ip
+        self.state_before = state_before
+        self.log_dirs_found = []  # type: List[str]
+        self.log_files_before = []  # type: List[LogFileInfo]
+        self.log_files_after = []  # type: List[LogFileInfo]
+        self.restarted = False
+        self.restart_ok = None  # type: Optional[bool]
+        self.restart_request_id = None  # type: Optional[str]
+        self.restart_error = ""
+        self.logs_exist = False
+        self.logs_generating = None  # type: Optional[bool]
+        self.missing_log = False
+        self.errors_found = []  # type: List[str]
+        self.status = "UNKNOWN"  # PASS / FAIL / WARN / SKIPPED
+        self.notes = []  # type: List[str]
 
 
 def utc_now() -> str:
@@ -505,7 +504,8 @@ class SSHRunner:
         cmd.append("%s@%s" % (self.user, host))
         return cmd
 
-    def run(self, host: str, remote: str, timeout: int = 120) -> Tuple[int, str, str]:
+    def run(self, host, remote, timeout=120):
+        # type: (str, str, int) -> Tuple[int, str, str]
         cmd = self._base_cmd(host) + [remote]
         try:
             p = subprocess.run(
@@ -513,15 +513,17 @@ class SSHRunner:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 timeout=timeout,
-                text=True,
+                universal_newlines=True,
             )
-            return p.returncode, p.stdout, p.stderr
+            return p.returncode, p.stdout or "", p.stderr or ""
         except subprocess.TimeoutExpired as e:
-            return 124, e.stdout or "", "ssh timeout: %s" % e
+            out = e.stdout if isinstance(e.stdout, str) else (e.stdout or b"").decode("utf-8", "replace") if e.stdout else ""
+            return 124, out, "ssh timeout: %s" % e
         except Exception as e:
             return 1, "", str(e)
 
-    def sudo_bash(self, host: str, script: str, timeout: int = 180) -> Tuple[int, str, str]:
+    def sudo_bash(self, host, script, timeout=180):
+        # type: (str, str, int) -> Tuple[int, str, str]
         # Pipe script to sudo bash -s on the remote host
         remote = "sudo bash -s"
         cmd = self._base_cmd(host) + [remote]
@@ -532,11 +534,12 @@ class SSHRunner:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 timeout=timeout,
-                text=True,
+                universal_newlines=True,
             )
-            return p.returncode, p.stdout, p.stderr
+            return p.returncode, p.stdout or "", p.stderr or ""
         except subprocess.TimeoutExpired as e:
-            return 124, e.stdout or "", "ssh timeout: %s" % e
+            out = e.stdout if isinstance(e.stdout, str) else (e.stdout or b"").decode("utf-8", "replace") if e.stdout else ""
+            return 124, out, "ssh timeout: %s" % e
         except Exception as e:
             return 1, "", str(e)
 
