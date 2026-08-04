@@ -23,8 +23,22 @@
 #   RANGER_SKIP_TYPES                     comma list to skip (e.g. tag,kms)
 #   RANGER_SKIP_SERVICES                  comma list of service names to skip
 #   RANGER_TIMEOUT_SECONDS                per-service HTTP timeout (default 180)
+#   RANGER_TIMEOUT_COOLDOWN_SECONDS       sleep after a ~10s Ranger TimedCallable
+#                                         timeout so the single-thread executor can
+#                                         finish a stuck client (default 30)
+#   RANGER_RETRY_ON_TIMEOUT               default 1 - retry once after cooldown when
+#                                         failure looks like TimedCallable timeout
 #   RANGER_FAIL_ON_ERROR                  default 1 - exit 1 if any tested service FAILs
 #   CURL_EXTRA_OPTS                       e.g. -k for self-signed TLS
+#
+# Note: Ranger Admin validates on a single timed-executor thread (~10s). A hung
+# Kafka/HBase client can make later services (Knox, KMS, YARN) false-FAIL even
+# when the same Test Connection succeeds alone in the UI. This script refreshes
+# each service by name, runs kafka last, cools down after timeouts, and retries.
+#
+# This script does NOT fix Ranger Knox SSL/truststore issues. For that, run
+# separately (only when needed):
+#   ./fix-ranger-knox-truststore.sh
 #
 # Usage:
 #   edit configs/ranger.env   # set RANGER_PASSWORD / URL
@@ -261,6 +275,8 @@ echo "    Include disabled: ${RANGER_INCLUDE_DISABLED}"
 
 export RANGER_USER RANGER_PASSWORD
 export RANGER_INCLUDE_DISABLED RANGER_TIMEOUT_SECONDS RANGER_FAIL_ON_ERROR
+export RANGER_TIMEOUT_COOLDOWN_SECONDS="${RANGER_TIMEOUT_COOLDOWN_SECONDS:-30}"
+export RANGER_RETRY_ON_TIMEOUT="${RANGER_RETRY_ON_TIMEOUT:-1}"
 export RANGER_SERVICE_TYPES="${RANGER_SERVICE_TYPES:-}"
 export RANGER_SKIP_TYPES="${RANGER_SKIP_TYPES:-}"
 export RANGER_SKIP_SERVICES="${RANGER_SKIP_SERVICES:-}"
@@ -275,9 +291,14 @@ ranger_base = sys.argv[1].rstrip("/")
 user = os.environ["RANGER_USER"]
 password = os.environ["RANGER_PASSWORD"]
 timeout = int(os.environ.get("RANGER_TIMEOUT_SECONDS", "180"))
+cooldown = int(os.environ.get("RANGER_TIMEOUT_COOLDOWN_SECONDS", "30"))
+retry_on_timeout = os.environ.get("RANGER_RETRY_ON_TIMEOUT", "1") == "1"
 include_disabled = os.environ.get("RANGER_INCLUDE_DISABLED", "0") == "1"
 fail_on_error = os.environ.get("RANGER_FAIL_ON_ERROR", "1") == "1"
 curl_extra = shlex.split(os.environ.get("CURL_EXTRA_OPTS", "").strip() or "")
+
+# Types that often hang Ranger's single timed-executor thread when brokers are down.
+SLOW_TYPES = ("kafka", "kafka-connect")
 
 def split_csv(name):
     raw = (os.environ.get(name) or "").strip()
@@ -306,7 +327,6 @@ def http_json(method, path, data=None):
         body = json.dumps(data).encode()
         headers["Content-Type"] = "application/json"
     url = ranger_base + path
-    # Prefer urllib; fall back path unused unless needed for -k via curl
     if curl_extra:
         cmd = ["curl", "-sS", "-w", "\n%{http_code}", "-X", method, "-u", "%s:%s" % (user, password)]
         cmd += curl_extra
@@ -346,36 +366,15 @@ def http_json(method, path, data=None):
     except URLError as e:
         return None, {"raw": str(e)}
 
-code, svcs = http_json("GET", "/service/public/v2/api/service")
-if code != 200 or not isinstance(svcs, list):
-    sys.stderr.write("ERROR: failed to list Ranger services HTTP=%s body=%s\n" % (code, svcs))
-    sys.exit(2)
+def looks_like_executor_timeout(dt, msg, status_code):
+    if status_code == 0:
+        return False
+    if dt < 9.0:
+        return False
+    m = (msg or "").lower()
+    return ("unable to connect repository" in m) or ("timeoutexception" in m) or (not m)
 
-print("Found %d Ranger service(s)" % len(svcs))
-results = []
-
-for svc in svcs:
-    name = svc.get("name") or "?"
-    typ = (svc.get("type") or "?").lower()
-    enabled = bool(svc.get("isEnabled"))
-
-    if include_types and typ not in include_types:
-        results.append((name, typ, "SKIP", "type filter"))
-        continue
-    if typ in skip_types:
-        results.append((name, typ, "SKIP", "skip type"))
-        continue
-    if name in skip_services:
-        results.append((name, typ, "SKIP", "skip service"))
-        continue
-    if not enabled and not include_disabled:
-        results.append((name, typ, "SKIP", "disabled"))
-        continue
-
-    print("---- test type=%s name=%s enabled=%s ----" % (typ, name, enabled))
-    t0 = time.time()
-    http_code, out = http_json("POST", "/service/plugins/services/validateConfig", svc)
-    dt = time.time() - t0
+def parse_result(http_code, out):
     msg = out.get("msgDesc") if isinstance(out, dict) else ""
     if not msg and isinstance(out, dict):
         mlist = out.get("messageList") or []
@@ -386,8 +385,6 @@ for svc in svcs:
             else:
                 msg = str(first).strip()
     status_code = out.get("statusCode") if isinstance(out, dict) else None
-    # statusCode 0 means Ranger accepted the connection (UI Test Connection success),
-    # even when msgDesc / messageList are empty (seen for tag services).
     if http_code == 200 and status_code == 0:
         ok = True
         if not msg:
@@ -396,12 +393,83 @@ for svc in svcs:
         ok = isinstance(msg, str) and "Successful" in msg and status_code in (0, None)
         if not msg and isinstance(out, dict):
             msg = out.get("raw") or json.dumps(out)[:300]
-    state = "PASS" if ok else "FAIL"
+    return ok, status_code, msg
+
+def validate_one(name, typ):
+    # Refresh by name so payload matches UI (id + ***** password lookup).
+    code, svc = http_json("GET", "/service/public/v2/api/service/name/%s" % name)
+    if code != 200 or not isinstance(svc, dict):
+        return False, None, 0.0, "failed to GET service by name HTTP=%s" % code
+    t0 = time.time()
+    http_code, out = http_json("POST", "/service/plugins/services/validateConfig", svc)
+    dt = time.time() - t0
+    ok, status_code, msg = parse_result(http_code, out)
+    return ok, status_code, dt, msg
+
+code, svcs = http_json("GET", "/service/public/v2/api/service")
+if code != 200 or not isinstance(svcs, list):
+    sys.stderr.write("ERROR: failed to list Ranger services HTTP=%s body=%s\n" % (code, svcs))
+    sys.exit(2)
+
+print("Found %d Ranger service(s)" % len(svcs))
+print("    Timeout cooldown: %ss  retry_on_timeout: %s" % (cooldown, int(retry_on_timeout)))
+
+# Filter + put slow/hang-prone types last so they cannot poison earlier tests.
+candidates = []
+for svc in svcs:
+    name = svc.get("name") or "?"
+    typ = (svc.get("type") or "?").lower()
+    enabled = bool(svc.get("isEnabled"))
+    if include_types and typ not in include_types:
+        continue
+    if typ in skip_types:
+        continue
+    if name in skip_services:
+        continue
+    if not enabled and not include_disabled:
+        continue
+    candidates.append((name, typ))
+
+def sort_key(item):
+    name, typ = item
+    return (0 if typ not in SLOW_TYPES else 1, typ, name)
+
+candidates.sort(key=sort_key)
+
+results = []  # name, typ, state, msg
+pending_retry = []
+
+for name, typ in candidates:
+    print("---- test type=%s name=%s ----" % (typ, name))
+    ok, status_code, dt, msg = validate_one(name, typ)
+    timed_out = (not ok) and looks_like_executor_timeout(dt, msg, status_code)
     one_line = (msg or "").replace("\n", " ").strip()
     if len(one_line) > 180:
         one_line = one_line[:177] + "..."
-    print("    %s HTTP=%s statusCode=%s %.1fs %s" % (state, http_code, status_code, dt, one_line))
+    state = "PASS" if ok else "FAIL"
+    print("    %s HTTP statusCode=%s %.1fs %s" % (state, status_code, dt, one_line))
+    if timed_out:
+        print("    [WARN] Ranger TimedCallable-style timeout (~10s); cooling down %ss for executor recovery" % cooldown)
+        time.sleep(cooldown)
+        if retry_on_timeout and typ not in SLOW_TYPES:
+            pending_retry.append((name, typ))
+            continue
     results.append((name, typ, state, one_line))
+
+if pending_retry:
+    print("---- retry after executor cooldown (%d service(s)) ----" % len(pending_retry))
+    time.sleep(max(5, cooldown // 2))
+    for name, typ in pending_retry:
+        print("---- retry type=%s name=%s ----" % (typ, name))
+        ok, status_code, dt, msg = validate_one(name, typ)
+        one_line = (msg or "").replace("\n", " ").strip()
+        if len(one_line) > 180:
+            one_line = one_line[:177] + "..."
+        state = "PASS" if ok else "FAIL"
+        print("    %s HTTP statusCode=%s %.1fs %s" % (state, status_code, dt, one_line))
+        results.append((name, typ, state, one_line))
+        if (not ok) and looks_like_executor_timeout(dt, msg, status_code):
+            time.sleep(cooldown)
 
 print("==== SUMMARY ====")
 width_name = max([len(r[0]) for r in results] + [4])
