@@ -36,6 +36,15 @@ cp configs/ranger.env.example configs/ranger.env
 
 Used by `ranger-yarn-all-queue-users-add.sh` and `ranger-plugin-connection-smoke.sh`. `ranger.env` is gitignored.
 
+### `configs/ranger-kms.env` (optional, for `ranger-kms-sample-smoke.sh`)
+
+```bash
+cp configs/ranger-kms.env.example configs/ranger-kms.env
+# optionally set KMS_PROVIDER / KMS_KEYTAB
+```
+
+`ranger-kms.env` is gitignored.
+
 You can skip Ambari for some flows by exporting **`CLUSTER_NAME`** (and, for Kudu CLI master override, **`KUDU_MASTER_ADDRESSES`** when documented below).
 
 ### `configs/hive.env` (optional)
@@ -182,6 +191,7 @@ Copy from `configs/sqoop.env.example` if you need non-default JDBC host, user, o
 | `flink-sample-smoke.sh` | **`flink/<FQDN>`** + Flink service keytab | Flink on YARN (host with `flink.service.keytab`) |
 | `ranger-yarn-all-queue-users-add.sh` | Ambari + **Ranger admin** REST (`RANGER_USER` / **`RANGER_PASSWORD`**) | Edge / ops host with **`curl`** + **`python3`** |
 | `ranger-plugin-connection-smoke.sh` | Ambari (optional) + **Ranger admin** REST Test Connection for each enabled service | Host that can reach Ranger Admin (`6080`) |
+| `ranger-kms-sample-smoke.sh` | **`rangerkms/<FQDN>`** (key create) + **`hdfs-<cluster>`** (createZone) + **`ambari-qa-<cluster>`** (put/get; needs Ranger policy) | Prefer a **`RANGER_KMS_SERVER`** host; set **`configs/ranger.env`** for EZ put/get |
 | `zeppelin-editors-smoke.sh` | Zeppelin Shiro login (`ZEPPELIN_USER` / **`ZEPPELIN_PASSWORD`**) | Host that can reach Zeppelin UI/API (`9995`) |
 | `airflow-sample-smoke.sh` | **`airflow-<cluster>`** headless keytab (optional) + Airflow CLI / health | Airflow host (`AIRFLOW_HOME` venv; web `:8889`) |
 | `clickhouse-sample-smoke.sh` | ClickHouse HTTP (`default` user; optional Kerberos / native client) | Host that can reach ClickHouse HTTP (`8123`) |
@@ -377,6 +387,8 @@ OOZIE_WORKFLOWS=hive sudo -E ./oozie-sample-smoke.sh
 - HiveServer2 is discovered from Ambari (`HIVE/HIVE_SERVER`) plus `hive-site.xml` (transport mode, port, `hive.server2.authentication.kerberos.principal` with `_HOST` resolved). If it cannot be resolved the workflow is reported **SKIPPED**, not failed.
 - **`OOZIE_HIVE2_JDBC_URL` must not contain `principal=`** - Oozie appends it from the credential and HiveConnection rejects duplicates.
 - The workflow creates a fresh per-run database so the submitting user owns it. Stock Ranger policies give group `public` only `create` on a database; `{OWNER}` then covers insert/select/drop. Reusing `default` fails on `DROP`, which Ranger authorizes against the database rather than the table.
+- **Stuck at `status=RUNNING` until the timeout** usually means the query's Tez ApplicationMaster is unschedulable, not that the query is slow. Compare **`tez.am.resource.memory.mb`** against **`yarn.nodemanager.resource.memory-mb`**: an AM sized at (or near) a full NodeManager only starts on a completely idle node, so it waits in `ACCEPTED` forever while YARN still reports free memory cluster-wide. The timeout output prints both values and warns when they conflict. `./update-ambari-yarn-mapred-tez-configs.sh` derives safe sizes from NodeManager capacity.
+- On timeout, suspend, or `Ctrl-C`, the script **kills the workflow**. A workflow left `RUNNING` keeps its launcher ApplicationMaster (and its container) alive indefinitely, and leaked launchers from earlier attempts are enough to starve later runs on a small cluster.
 
 **Env:** `AMBARI_*`, `CLUSTER_NAME`, `HDFS_KEYTAB`, `OOZIE_URL`, `OOZIE_NAME_NODE`, `OOZIE_RESOURCE_MANAGER`, `OOZIE_QUEUE`, `OOZIE_WORKFLOWS`, `OOZIE_WORKFLOW_ROOT`, `OOZIE_WORKFLOW_DIR` (legacy single-dir mode), `OOZIE_HDFS_APP_DIR`, `OOZIE_POLL_SECONDS`, `OOZIE_TIMEOUT_SECONDS`, `HIVE_SITE_XML`, `OOZIE_HIVE2_JDBC_URL`, `OOZIE_HIVE2_PRINCIPAL`, `OOZIE_HIVE_DB`, `OOZIE_HIVE_TABLE`.
 
@@ -567,6 +579,35 @@ RANGER_SKIP_TYPES=knox,kms ./ranger-plugin-connection-smoke.sh
 
 ---
 
+## `ranger-kms-sample-smoke.sh`
+
+- **Goal:** exercise Ranger KMS end-to-end: create a key, list/describe/roll it, then optionally create an HDFS encryption zone and put/get a file through it.
+- **Provider URI:** `KMS_PROVIDER`, else Ambari `RANGER_KMS_SERVER` + `kms-env/kms_port` (+ SSL from `ranger-kms-site`), else `hadoop.security.key.provider.path` / `dfs.encryption.key.provider.uri` from local Hadoop conf.
+- **Kerberos (key ops):** prefers **`/etc/security/keytabs/rangerkms.service.keytab`** as **`rangerkms/<FQDN>`**, which Ranger maps to **`keyadmin`**.
+- **Kerberos (EZ):** **`hdfs-<cluster>`** for `createZone`; **`ambari-qa-<cluster>`** for put/get. Stock **`dbks-site`** sets **`hadoop.kms.blacklist.DECRYPT_EEK=hdfs`**, so put/get as `hdfs` always fails.
+- **Ranger policy:** with **`configs/ranger.env`** (`RANGER_PASSWORD`), creates a temporary KMS policy granting **`ambari-qa`** `decrypteek` (and **`hdfs`** `generateeek`) on the smoke key, waits for KMS policy cache refresh, then deletes the policy on cleanup.
+- **Cleanup:** removes the temp Ranger policy, EZ path, and smoke key unless **`KMS_KEEP_KEY=1`**.
+
+```bash
+# On a RANGER_KMS_SERVER host; ranger.env needed for EZ put/get:
+cp configs/ranger.env.example configs/ranger.env   # set RANGER_PASSWORD
+sudo ./ranger-kms-sample-smoke.sh
+
+# Key lifecycle only:
+KMS_SKIP_EZ=1 sudo -E ./ranger-kms-sample-smoke.sh
+```
+
+### Notes
+
+- **Why not hdfs for key create?** Stock Ranger KMS policies grant `CREATE_KEY` / `GET_KEYS` to **`keyadmin`**, not **`hdfs`**.
+- **Why not hdfs for EZ put/get?** `hadoop.kms.blacklist.DECRYPT_EEK=hdfs` (default in `dbks-site`). Use **`ambari-qa`** (or set `KMS_CLIENT_*`).
+- **Policy cache:** after creating the Ranger policy the script retries put for up to **`KMS_POLICY_WAIT_SECONDS`** (default 45).
+- **HTTP probe:** `GET /kms/v1/keys/names` answering `200`/`401`/`403` counts as PASS.
+
+**Env:** `KMS_ENV_FILE`, `KMS_PROVIDER`, `KMS_HOSTS`, `KMS_PORT`, `KMS_SSL`, `KMS_KEYTAB`, `KMS_PRINCIPAL`, `KMS_HDFS_KEYTAB`, `KMS_HDFS_PRINCIPAL`, `KMS_CLIENT_KEYTAB`, `KMS_CLIENT_PRINCIPAL`, `KMS_CLIENT_USER`, `KMS_SKIP_RANGER_POLICY`, `KMS_POLICY_WAIT_SECONDS`, `RANGER_*`, `KMS_SKIP_KINIT`, `KMS_KEY_NAME`, `KMS_KEY_SIZE`, `KMS_CIPHER`, `KMS_EZ_PATH`, `KMS_SKIP_HTTP`, `KMS_SKIP_EZ`, `KMS_SKIP_ROLL`, `KMS_KEEP_KEY`, `CURL_EXTRA_OPTS`, Ambari vars.
+
+---
+
 ## `zeppelin-editors-smoke.sh`
 
 - **Goal:** smoke every **supported Zeppelin editor / interpreter** discovered from `GET /api/interpreter` (e.g. `%md.md`, `%sh.sh`, `%livy.spark`, `%jdbc.sql`, `%angular.angular`).
@@ -639,7 +680,7 @@ DRUID_SKIP_INGEST=1 sudo -E ./druid-sample-smoke.sh
 
 ## `pinot-sample-smoke.sh`
 
-- **Goal:** Pinot role **health** (`/health` -> `OK`), Controller **instances/tables**, then optional **schema + OFFLINE table**, **`/ingestFromFile`** of 3 JSON rows, and Broker **SQL `COUNT(*)=3`**.
+- **Goal:** Pinot role **health** (`/health` -> `OK`), Controller **instances/tables**, **schema + OFFLINE table** create and read-back, Broker **SQL routing**, then **`/ingestFromFile`** of 3 JSON rows and Broker **SQL `COUNT(*)=3`**.
 - Discovers Controller / Broker / Server / Minion from Ambari (ports from `pinot-*-conf`, defaults controller **9000**, broker **8099**, server admin **8097**, minion **9514**). Reads `enable_ssl` / `basic_auth` from `pinot-env`.
 - Specs: `pinot/odp_pinot_smoke_schema.json`, `pinot/odp_pinot_smoke_table.json`.
 - Host pre-reqs: `prereqs/install-pinot-prereqs-*.sh` (JDK 11 + Python `requests`).
@@ -647,11 +688,27 @@ DRUID_SKIP_INGEST=1 sudo -E ./druid-sample-smoke.sh
 ```bash
 ./pinot-sample-smoke.sh
 
-# Health + listing only:
+# Stop after schema/table + query routing (no row ingest):
 PINOT_SKIP_INGEST=1 ./pinot-sample-smoke.sh
+
+# Health + listing only:
+PINOT_SKIP_TABLE=1 ./pinot-sample-smoke.sh
 ```
 
-**Env:** `PINOT_CONTROLLER_URL`, `PINOT_BROKER_URL`, `PINOT_SERVER_URL`, `PINOT_MINION_URL`, `PINOT_CONTROLLER_SSL`, `PINOT_BASIC_AUTH`, `PINOT_USER`, `PINOT_PASSWORD`, `PINOT_SKIP_INGEST`, `PINOT_TABLE`, `PINOT_KEEP_TABLE`, `PINOT_TIMEOUT_SECONDS`, `CURL_EXTRA_OPTS`, Ambari vars.
+### Notes
+
+- **`/ingestFromFile` needs `controller.local.temp.dir`.** The controller builds its ingestion working directory from that property, and when it is unset Pinot uses the **relative** path `ingestion_dir/...` which the controller process cannot create - `/ingestFromFile` then answers **500** on an otherwise healthy cluster. The stock ODP `pinot-controller-conf` template does not set it. The script recognises that specific error and reports the ingest step **SKIPPED** with the fix rather than failing. To exercise the real ingest path, add this line to Ambari > Pinot > Configs > *Pinot Controller Configuration* and restart `PINOT_CONTROLLER`:
+
+```text
+controller.local.temp.dir={{controller_data_dir}}/tmp
+```
+
+  Anchoring it to `controller_data_dir` keeps the scratch directory next to the segment store (default `/tmp/pinot/data/controller/tmp`). The controller creates it on startup via `FileUtils.forceMkdir`, so the directory does not have to exist beforehand. Use a plain local path instead if `controller.data.dir` points at remote storage.
+
+- **Empty tables answer without a `resultTable`.** A freshly created OFFLINE table returns HTTP 200 with `exceptions: []` and no `resultTable`, so the routing check asserts "query answered without exceptions" instead of a row count. Only the post-ingest check compares against `PINOT_EXPECTED_COUNT`.
+- **Error bodies are printed.** Pinot returns its diagnostics in the body of a `4xx`/`5xx`, so requests never use `curl -f` - the controller's message is shown as-is.
+
+**Env:** `PINOT_CONTROLLER_URL`, `PINOT_BROKER_URL`, `PINOT_SERVER_URL`, `PINOT_MINION_URL`, `PINOT_CONTROLLER_SSL`, `PINOT_BASIC_AUTH`, `PINOT_USER`, `PINOT_PASSWORD`, `PINOT_SKIP_TABLE`, `PINOT_SKIP_INGEST`, `PINOT_TABLE`, `PINOT_KEEP_TABLE`, `PINOT_EXPECTED_COUNT`, `PINOT_TIMEOUT_SECONDS`, `CURL_EXTRA_OPTS`, Ambari vars.
 
 ---
 

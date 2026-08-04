@@ -101,6 +101,7 @@ SMOKE_TESTS=(
   knox-sample-smoke.sh
   infra-solr-sample-smoke.sh
   ranger-plugin-connection-smoke.sh
+  ranger-kms-sample-smoke.sh
 )
 
 script_matches_token() {
