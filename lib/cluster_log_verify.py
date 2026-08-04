@@ -787,11 +787,364 @@ def evaluate_status(result: ComponentResult) -> None:
     result.status = "PASS"
 
 
-def write_reports(results: List[ComponentResult], report_dir: Path, meta: Dict[str, Any]) -> Tuple[Path, Path]:
+def results_to_jsonable(results, meta):
+    # type: (List[ComponentResult], Dict[str, Any]) -> Dict[str, Any]
+    rows = []
+    for r in results:
+        rows.append(
+            {
+                "status": r.status,
+                "service": r.service,
+                "component": r.component,
+                "host": r.host_name,
+                "ip": r.host_ip,
+                "restarted": bool(r.restarted),
+                "restart_ok": r.restart_ok,
+                "restart_error": r.restart_error or "",
+                "logs_exist": bool(r.logs_exist),
+                "logs_generating": r.logs_generating,
+                "missing_log": bool(r.missing_log),
+                "log_dirs": list(r.log_dirs_found),
+                "notes": list(r.notes),
+                "errors": list(r.errors_found),
+            }
+        )
+    counts = {"PASS": 0, "FAIL": 0, "WARN": 0, "SKIPPED": 0, "UNKNOWN": 0}
+    for r in results:
+        counts[r.status] = counts.get(r.status, 0) + 1
+    return {
+        "generated": utc_now(),
+        "ambari": meta.get("ambari"),
+        "cluster": meta.get("cluster"),
+        "restart": bool(meta.get("restart")),
+        "counts": counts,
+        "total": len(results),
+        "rows": rows,
+    }
+
+
+def write_html_report(payload, html_path):
+    # type: (Dict[str, Any], Path) -> None
+    """Self-contained interactive HTML dashboard (filter / search / expand errors)."""
+    data_json = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+    # Escape </script> so embedded JSON cannot break out of the script tag.
+    data_json = data_json.replace("<", "\\u003c").replace(">", "\\u003e")
+
+    html = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Cluster log verification - %(cluster)s</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --text: #1a1d21;
+    --muted: #5c6570;
+    --border: #d8dde3;
+    --pass: #1b7f3a;
+    --pass-bg: #e8f6ec;
+    --fail: #b42318;
+    --fail-bg: #fdeceb;
+    --warn: #9a6700;
+    --warn-bg: #fff6e0;
+    --accent: #245bdb;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.4;
+  }
+  header {
+    background: var(--panel); border-bottom: 1px solid var(--border);
+    padding: 16px 20px; position: sticky; top: 0; z-index: 10;
+  }
+  h1 { margin: 0 0 4px; font-size: 18px; font-weight: 650; }
+  .meta { color: var(--muted); font-size: 12px; }
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 16px 20px 40px; }
+  .cards { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px 14px; cursor: pointer; user-select: none;
+  }
+  .card:hover, .card.active { border-color: var(--accent); }
+  .card .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .card .value { font-size: 26px; font-weight: 700; margin-top: 2px; }
+  .card.pass .value { color: var(--pass); }
+  .card.fail .value { color: var(--fail); }
+  .card.warn .value { color: var(--warn); }
+  .toolbar {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px; margin-bottom: 12px;
+  }
+  .toolbar input, .toolbar select {
+    border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px;
+    font-size: 13px; background: #fff; color: var(--text);
+  }
+  .toolbar input[type=search] { min-width: 220px; flex: 1; }
+  .chip {
+    display: inline-block; border-radius: 999px; padding: 2px 8px;
+    font-size: 11px; font-weight: 700; letter-spacing: .03em;
+  }
+  .chip.PASS { background: var(--pass-bg); color: var(--pass); }
+  .chip.FAIL { background: var(--fail-bg); color: var(--fail); }
+  .chip.WARN { background: var(--warn-bg); color: var(--warn); }
+  .chip.SKIPPED, .chip.UNKNOWN { background: #eef1f4; color: var(--muted); }
+  table { width: 100%%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  th, td { padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: top; text-align: left; }
+  th { background: #f0f2f5; font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); cursor: pointer; white-space: nowrap; }
+  th:hover { color: var(--text); }
+  tr:hover td { background: #fafbfc; }
+  tr.hidden { display: none; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+  .muted { color: var(--muted); }
+  details { margin-top: 4px; }
+  details summary { cursor: pointer; color: var(--accent); font-size: 12px; }
+  .err {
+    margin: 4px 0 0; padding: 6px 8px; background: #fafafa; border: 1px solid var(--border);
+    border-radius: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px; white-space: pre-wrap; word-break: break-word; max-height: 160px; overflow: auto;
+  }
+  .section { margin: 18px 0 8px; font-size: 14px; font-weight: 650; }
+  .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+  @media (max-width: 900px) {
+    .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Cluster log verification</h1>
+  <div class="meta" id="meta"></div>
+</header>
+<div class="wrap">
+  <div class="cards" id="cards"></div>
+  <div class="toolbar">
+    <input id="q" type="search" placeholder="Search service, component, host, notes, errors..."/>
+    <select id="statusFilter">
+      <option value="">All statuses</option>
+      <option value="FAIL">FAIL</option>
+      <option value="WARN">WARN</option>
+      <option value="PASS">PASS</option>
+      <option value="SKIPPED">SKIPPED</option>
+    </select>
+    <select id="serviceFilter"><option value="">All services</option></select>
+    <select id="issueFilter">
+      <option value="">All issues</option>
+      <option value="missing">Missing log</option>
+      <option value="notgen">Not generating</option>
+      <option value="errors">Has errors</option>
+      <option value="restartfail">Restart failed</option>
+    </select>
+    <span class="muted" id="shown"></span>
+  </div>
+
+  <div class="section">Attention needed</div>
+  <div id="attention"></div>
+
+  <div class="section">All components</div>
+  <table>
+    <thead>
+      <tr>
+        <th data-k="status">Status</th>
+        <th data-k="service">Service</th>
+        <th data-k="component">Component</th>
+        <th data-k="host">Host</th>
+        <th data-k="logs_exist">Logs</th>
+        <th data-k="logs_generating">Generating</th>
+        <th data-k="log_dirs">Log dirs</th>
+        <th data-k="notes">Notes / errors</th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+</div>
+<script id="report-data" type="application/json">%(data_json)s</script>
+<script>
+(function () {
+  var DATA = JSON.parse(document.getElementById("report-data").textContent);
+  var rows = DATA.rows || [];
+  var sortKey = "status";
+  var sortDir = 1;
+  var statusRank = { FAIL: 0, WARN: 1, UNKNOWN: 2, SKIPPED: 3, PASS: 4 };
+
+  function esc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function yn(v) {
+    if (v === true) return "YES";
+    if (v === false) return "NO";
+    return "-";
+  }
+
+  document.getElementById("meta").textContent =
+    "Cluster: " + (DATA.cluster || "-") +
+    "  |  Ambari: " + (DATA.ambari || "-") +
+    "  |  Generated: " + (DATA.generated || "-") +
+    "  |  Restart: " + (DATA.restart ? "ON" : "OFF") +
+    "  |  Total: " + (DATA.total || rows.length);
+
+  var counts = DATA.counts || {};
+  var cards = [
+    ["TOTAL", DATA.total || rows.length, ""],
+    ["PASS", counts.PASS || 0, "pass"],
+    ["FAIL", counts.FAIL || 0, "fail"],
+    ["WARN", counts.WARN || 0, "warn"],
+    ["SKIPPED", counts.SKIPPED || 0, ""]
+  ];
+  var cardsEl = document.getElementById("cards");
+  cards.forEach(function (c) {
+    var d = document.createElement("div");
+    d.className = "card " + c[2];
+    d.dataset.status = c[0] === "TOTAL" ? "" : c[0];
+    d.innerHTML = '<div class="label">' + c[0] + '</div><div class="value">' + c[1] + "</div>";
+    d.onclick = function () {
+      document.getElementById("statusFilter").value = d.dataset.status;
+      Array.prototype.forEach.call(cardsEl.children, function (x) { x.classList.remove("active"); });
+      d.classList.add("active");
+      render();
+    };
+    cardsEl.appendChild(d);
+  });
+
+  var services = {};
+  rows.forEach(function (r) { services[r.service] = 1; });
+  Object.keys(services).sort().forEach(function (s) {
+    var o = document.createElement("option");
+    o.value = s; o.textContent = s;
+    document.getElementById("serviceFilter").appendChild(o);
+  });
+
+  function matches(r) {
+    var st = document.getElementById("statusFilter").value;
+    var sv = document.getElementById("serviceFilter").value;
+    var issue = document.getElementById("issueFilter").value;
+    var q = (document.getElementById("q").value || "").toLowerCase().trim();
+    if (st && r.status !== st) return false;
+    if (sv && r.service !== sv) return false;
+    if (issue === "missing" && !(r.missing_log || !r.logs_exist)) return false;
+    if (issue === "notgen" && r.logs_generating !== false) return false;
+    if (issue === "errors" && !(r.errors && r.errors.length)) return false;
+    if (issue === "restartfail" && !(r.restarted && r.restart_ok === false)) return false;
+    if (q) {
+      var blob = [r.status, r.service, r.component, r.host, r.ip, (r.log_dirs || []).join(" "),
+        (r.notes || []).join(" "), (r.errors || []).join(" "), r.restart_error || ""].join(" ").toLowerCase();
+      if (blob.indexOf(q) < 0) return false;
+    }
+    return true;
+  }
+
+  function sortedRows() {
+    var out = rows.slice();
+    out.sort(function (a, b) {
+      var av = a[sortKey], bv = b[sortKey];
+      if (sortKey === "status") {
+        av = statusRank[a.status] != null ? statusRank[a.status] : 9;
+        bv = statusRank[b.status] != null ? statusRank[b.status] : 9;
+      }
+      if (typeof av === "boolean") { av = av ? 1 : 0; bv = bv ? 1 : 0; }
+      if (av == null) av = "";
+      if (bv == null) bv = "";
+      if (av < bv) return -1 * sortDir;
+      if (av > bv) return 1 * sortDir;
+      return 0;
+    });
+    return out;
+  }
+
+  function renderAttention(visible) {
+    var bad = visible.filter(function (r) {
+      return r.status === "FAIL" || r.status === "WARN" || r.missing_log || r.logs_generating === false;
+    });
+    var el = document.getElementById("attention");
+    if (!bad.length) {
+      el.innerHTML = '<div class="empty">No FAIL/WARN/missing/not-generating rows in current filter.</div>';
+      return;
+    }
+    var html = "<table><thead><tr><th>Status</th><th>Service</th><th>Component</th><th>Host</th><th>Issue</th></tr></thead><tbody>";
+    bad.forEach(function (r) {
+      var issues = [];
+      if (r.missing_log || !r.logs_exist) issues.push("MISSING_LOG");
+      if (r.logs_generating === false) issues.push("NOT_GENERATING");
+      if (r.restarted && r.restart_ok === false) issues.push("RESTART_FAILED");
+      if (r.errors && r.errors.length) issues.push("ERRORS_IN_LOG (" + r.errors.length + ")");
+      if (!issues.length) issues.push((r.notes || []).join(", ") || r.status);
+      html += "<tr><td><span class='chip " + esc(r.status) + "'>" + esc(r.status) + "</span></td>" +
+        "<td>" + esc(r.service) + "</td><td class='mono'>" + esc(r.component) + "</td>" +
+        "<td>" + esc(r.host) + " <span class='muted'>(" + esc(r.ip) + ")</span></td>" +
+        "<td>" + esc(issues.join(", ")) + "</td></tr>";
+    });
+    html += "</tbody></table>";
+    el.innerHTML = html;
+  }
+
+  function render() {
+    var tbody = document.getElementById("tbody");
+    tbody.innerHTML = "";
+    var visible = sortedRows().filter(matches);
+    document.getElementById("shown").textContent = "Showing " + visible.length + " / " + rows.length;
+    renderAttention(visible);
+    visible.forEach(function (r) {
+      var tr = document.createElement("tr");
+      var errHtml = "";
+      if (r.errors && r.errors.length) {
+        errHtml = "<details><summary>" + r.errors.length + " error sample(s)</summary>" +
+          r.errors.map(function (e) { return '<div class="err">' + esc(e) + "</div>"; }).join("") +
+          "</details>";
+      }
+      var notes = (r.notes || []).join("; ");
+      tr.innerHTML =
+        '<td><span class="chip ' + esc(r.status) + '">' + esc(r.status) + "</span></td>" +
+        "<td>" + esc(r.service) + "</td>" +
+        '<td class="mono">' + esc(r.component) + "</td>" +
+        "<td>" + esc(r.host) + "<div class='muted mono'>" + esc(r.ip) + "</div></td>" +
+        "<td>" + yn(r.logs_exist) + "</td>" +
+        "<td>" + yn(r.logs_generating) + "</td>" +
+        '<td class="mono">' + esc((r.log_dirs || []).join(", ") || "-") + "</td>" +
+        "<td><div class='muted'>" + esc(notes || "-") + "</div>" + errHtml + "</td>";
+      tbody.appendChild(tr);
+    });
+  }
+
+  Array.prototype.forEach.call(document.querySelectorAll("th[data-k]"), function (th) {
+    th.onclick = function () {
+      var k = th.getAttribute("data-k");
+      if (sortKey === k) sortDir *= -1;
+      else { sortKey = k; sortDir = 1; }
+      render();
+    };
+  });
+  ["q", "statusFilter", "serviceFilter", "issueFilter"].forEach(function (id) {
+    document.getElementById(id).addEventListener("input", render);
+    document.getElementById(id).addEventListener("change", render);
+  });
+  render();
+})();
+</script>
+</body>
+</html>
+""" % {
+        "cluster": payload.get("cluster") or "cluster",
+        "data_json": data_json,
+    }
+    html_path.write_text(html, encoding="utf-8")
+
+
+def write_reports(results, report_dir, meta):
+    # type: (List[ComponentResult], Path, Dict[str, Any]) -> Tuple[Path, Path, Path, Path]
     report_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     md_path = report_dir / ("cluster-log-verify-%s.md" % stamp)
     tsv_path = report_dir / ("cluster-log-verify-%s.tsv" % stamp)
+    json_path = report_dir / ("cluster-log-verify-%s.json" % stamp)
+    html_path = report_dir / ("cluster-log-verify-%s.html" % stamp)
+    latest_html = report_dir / "latest.html"
+    latest_json = report_dir / "latest.json"
 
     counts = {"PASS": 0, "FAIL": 0, "WARN": 0, "SKIPPED": 0, "UNKNOWN": 0}
     for r in results:
@@ -802,7 +1155,7 @@ def write_reports(results: List[ComponentResult], report_dir: Path, meta: Dict[s
     with_err = [r for r in results if r.errors_found]
     restart_fail = [r for r in results if r.restarted and r.restart_ok is False]
 
-    lines: List[str] = []
+    lines = []  # type: List[str]
     lines.append("# Cluster service log verification report")
     lines.append("")
     lines.append("- Generated: `%s`" % utc_now())
@@ -813,6 +1166,7 @@ def write_reports(results: List[ComponentResult], report_dir: Path, meta: Dict[s
         "- Summary: PASS=%d FAIL=%d WARN=%d SKIPPED=%d total=%d"
         % (counts.get("PASS", 0), counts.get("FAIL", 0), counts.get("WARN", 0), counts.get("SKIPPED", 0), len(results))
     )
+    lines.append("- HTML dashboard: `%s`" % html_path.name)
     lines.append("")
 
     lines.append("## Missing / not generating logs")
@@ -932,7 +1286,14 @@ def write_reports(results: List[ComponentResult], report_dir: Path, meta: Dict[s
                 + "\n"
             )
 
-    return md_path, tsv_path
+    payload = results_to_jsonable(results, meta)
+    json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    write_html_report(payload, html_path)
+    # Convenience pointers for the latest run
+    latest_json.write_text(json_path.read_text(encoding="utf-8"), encoding="utf-8")
+    latest_html.write_text(html_path.read_text(encoding="utf-8"), encoding="utf-8")
+
+    return md_path, tsv_path, html_path, json_path
 
 
 def probe_component_logs(
@@ -969,7 +1330,8 @@ def main() -> int:
     parser.add_argument("--password", default=os.environ.get("AMBARI_PASSWORD", "admin"))
     parser.add_argument("--cluster", default=os.environ.get("CLUSTER_NAME", ""))
     parser.add_argument("--ssh-user", default=os.environ.get("SSH_USER", "acceldata"))
-    parser.add_argument("--ssh-key", default=os.environ.get("SSH_KEY", ""))
+    parser.add_argument("--ssh-key", default=os.environ.get("SSH_KEY", ""),
+                        help="Private key path (optional; uses ssh defaults when empty)")
     parser.add_argument("--ssh-opts", default=os.environ.get("SSH_OPTS", "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=15"))
     parser.add_argument("--restart", action="store_true", default=os.environ.get("LOG_VERIFY_RESTART", "0") == "1")
     parser.add_argument("--no-restart", action="store_true")
@@ -979,7 +1341,7 @@ def main() -> int:
     parser.add_argument(
         "--hosts",
         default=os.environ.get("LOG_VERIFY_HOSTS", ""),
-        help="Limit to host names or IPs (comma/space separated)",
+        help="Limit to Ambari host names or IPs (comma/space separated); empty = all",
     )
     parser.add_argument("--stale-hours", type=float, default=float(os.environ.get("LOG_STALE_HOURS", "24")))
     parser.add_argument("--settle-seconds", type=int, default=int(os.environ.get("LOG_SETTLE_SECONDS", "20")))
@@ -999,9 +1361,20 @@ def main() -> int:
         return 2
     ssh_key = os.path.expanduser(args.ssh_key or "")
     args.ssh_key = ssh_key
-    if not ssh_key or not Path(ssh_key).exists():
+    if ssh_key and not Path(ssh_key).exists():
         log("ERROR", "SSH key not found: %s" % ssh_key)
         return 2
+    if ssh_key:
+        try:
+            mode = oct(os.stat(ssh_key).st_mode & 0o777)
+            # ssh rejects keys readable by group/other
+            if os.stat(ssh_key).st_mode & 0o077:
+                log("WARN", "SSH key permissions too open (%s); chmod 600 %s" % (mode, ssh_key))
+                os.chmod(ssh_key, 0o600)
+        except OSError as e:
+            log("WARN", "could not adjust SSH key permissions: %s" % e)
+    else:
+        log("INFO", "SSH_KEY not set; using ssh default identity / agent")
 
     services_filter = set(split_csv(args.services))
     skip_services = set(split_csv(args.skip_services)) or set(DEFAULT_SKIP_SERVICES)
@@ -1174,7 +1547,7 @@ def main() -> int:
     if not report_dir.is_absolute():
         # relative to CWD (wrapper cds to script dir)
         report_dir = Path.cwd() / report_dir
-    md_path, tsv_path = write_reports(
+    md_path, tsv_path, html_path, json_path = write_reports(
         results,
         report_dir,
         {
@@ -1189,8 +1562,11 @@ def main() -> int:
     warn = sum(1 for r in results if r.status == "WARN")
     passed = sum(1 for r in results if r.status == "PASS")
     log("INFO", "Done. PASS=%d WARN=%d FAIL=%d" % (passed, warn, fail))
-    log("INFO", "Markdown report: %s" % md_path)
-    log("INFO", "TSV report: %s" % tsv_path)
+    log("INFO", "HTML dashboard: %s" % html_path)
+    log("INFO", "Open latest: %s" % (report_dir / "latest.html"))
+    log("INFO", "JSON: %s" % json_path)
+    log("INFO", "Markdown: %s" % md_path)
+    log("INFO", "TSV: %s" % tsv_path)
 
     missing_names = sorted(
         {
