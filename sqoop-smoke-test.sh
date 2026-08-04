@@ -17,8 +17,7 @@
 #     mysql -u root -p < sql/sqoop-smoke-mysql-setup.sql
 #
 # Environment:
-#   SQOOP_CONFIG_FILE       default: <script-dir>/configs/sqoop.env - optional KEY=value file (gitignored
-#                            copy: configs/sqoop.env.example -> sqoop.env). Fills vars unset when the script
+#   SQOOP_CONFIG_FILE       default: <script-dir>/configs/sqoop.env - optional KEY=value file ( configs/sqoop.env -> sqoop.env). Fills vars unset when the script
 #                            started (before script defaults). Remove stale sqoop.env after upgrading.
 #   AMBARI_CONFIG_FILE      default: <script-dir>/configs/ambari.env (cluster name for kinit)
 #   AMBARI_BASE_URL, AMBARI_USER, AMBARI_PASSWORD
@@ -164,7 +163,7 @@ resolve_cluster_and_kinit_hdfs() {
   elif [[ -n "${AMBARI_USER:-}" && -n "${AMBARI_PASSWORD:-}" ]]; then
     :
   else
-    die "Missing Ambari credentials. Create ${AMBARI_CONFIG_FILE} (copy from ${SCRIPT_DIR}/configs/ambari.env.example) or set AMBARI_USER and AMBARI_PASSWORD, or set CLUSTER_NAME / SQOOP_SKIP_KINIT=1."
+    die "Missing Ambari credentials. Edit ${AMBARI_CONFIG_FILE} or set AMBARI_USER and AMBARI_PASSWORD, or set CLUSTER_NAME / SQOOP_SKIP_KINIT=1."
   fi
 
   AMBARI_BASE_URL="${AMBARI_BASE_URL:-${_cfg_AMBARI_BASE_URL:-http://10.101.11.22:8080}}"
@@ -436,9 +435,9 @@ line_count_parts() {
 need_cmd sqoop
 need_cmd hdfs
 
-# Old sqoop.env.example used hive + sqoop_test; smoke_import only exists in sqoop_smoke per setup SQL.
+# Old sqoop.env used hive + sqoop_test; smoke_import only exists in sqoop_smoke per setup SQL.
 if [[ "$SQOOP_MYSQL_USER" == "hive" && "$SQOOP_MYSQL_DATABASE" == "sqoop_test" && "$SQOOP_SOURCE_TABLE" == "smoke_import" ]]; then
-  die "MySQL settings look stale: user=hive database=sqoop_test but sql/sqoop-smoke-mysql-setup.sql creates sqoop_smoke.smoke_import for user sqoop_smoke. Remove or edit ${SQOOP_CONFIG_FILE} (re-copy configs/sqoop.env.example), or export SQOOP_MYSQL_DATABASE=sqoop_smoke SQOOP_MYSQL_USER=sqoop_smoke SQOOP_MYSQL_PASSWORD=sqoop_smoke"
+  die "MySQL settings look stale: user=hive database=sqoop_test but sql/sqoop-smoke-mysql-setup.sql creates sqoop_smoke.smoke_import for user sqoop_smoke. Remove or edit ${SQOOP_CONFIG_FILE}, or export SQOOP_MYSQL_DATABASE=sqoop_smoke SQOOP_MYSQL_USER=sqoop_smoke SQOOP_MYSQL_PASSWORD=sqoop_smoke"
 fi
 
 if [[ "$SQOOP_SKIP_KINIT" == "1" ]]; then

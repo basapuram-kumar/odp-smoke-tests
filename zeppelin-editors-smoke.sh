@@ -22,7 +22,7 @@
 #   CURL_EXTRA_OPTS          e.g. -k for TLS
 #
 # Usage:
-#   cp configs/zeppelin.env.example configs/zeppelin.env
+#   edit configs/zeppelin.env
 #   ./zeppelin-editors-smoke.sh
 #
 set -euo pipefail
@@ -149,7 +149,7 @@ if [[ -z "${ZEPPELIN_BASE_URL:-}" ]]; then
   [[ -n "$AMBARI_USER" && -n "$AMBARI_PASSWORD" ]] || die "Ambari credentials required when ZEPPELIN_BASE_URL is unset."
 fi
 
-[[ -n "${ZEPPELIN_PASSWORD:-}" ]] || die "Zeppelin password missing. Export ZEPPELIN_PASSWORD, set ZEPPELIN_PASSWORD_FILE, or create ${ZEPPELIN_ENV_FILE} (copy from ${SCRIPT_DIR}/configs/zeppelin.env.example)."
+[[ -n "${ZEPPELIN_PASSWORD:-}" ]] || die "Zeppelin password missing. Export ZEPPELIN_PASSWORD, set ZEPPELIN_PASSWORD_FILE, or edit ${ZEPPELIN_ENV_FILE}."
 
 cluster=""
 if [[ -z "${ZEPPELIN_BASE_URL:-}" ]]; then

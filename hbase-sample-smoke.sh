@@ -4,7 +4,7 @@
 # kinit as hbase-<cluster> with the HBase headless keytab, then run hbase shell
 # commands from hbase/hbase-sample-smoke.hbase.
 #
-# Ambari credentials: configs/ambari.env (see configs/ambari.env.example), or env vars.
+# Ambari credentials: configs/ambari.env, or env vars.
 #
 # Environment (optional):
 #   AMBARI_CONFIG_FILE      default <script-dir>/configs/ambari.env
@@ -123,7 +123,7 @@ elif [[ -f "$AMBARI_CONFIG_FILE" ]]; then
 elif [[ -n "${AMBARI_USER:-}" && -n "${AMBARI_PASSWORD:-}" ]]; then
   :
 else
-  die "Missing Ambari credentials. Create ${AMBARI_CONFIG_FILE} (copy from ${SCRIPT_DIR}/configs/ambari.env.example) or set AMBARI_USER and AMBARI_PASSWORD in the environment."
+  die "Missing Ambari credentials. Edit ${AMBARI_CONFIG_FILE} or set AMBARI_USER and AMBARI_PASSWORD in the environment."
 fi
 
 AMBARI_BASE_URL="${AMBARI_BASE_URL:-${_cfg_AMBARI_BASE_URL:-http://10.101.11.22:8080}}"

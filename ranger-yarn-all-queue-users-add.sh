@@ -9,7 +9,7 @@
 #   falls back to the first RANGER_ADMIN host + ranger.service.http.port (default 6080).
 #
 # Ambari: configs/ambari.env (same pattern as other sample-jobs).
-# Ranger: optional configs/ranger.env (copy from ranger.env.example) for RANGER_PASSWORD, etc.
+# Ranger: optional configs/ranger.env for RANGER_PASSWORD, etc.
 #
 # Environment (optional):
 #   AMBARI_CONFIG_FILE, AMBARI_BASE_URL, AMBARI_USER, AMBARI_PASSWORD, CLUSTER_NAME
@@ -27,7 +27,7 @@
 #   CURL_EXTRA_OPTS           e.g. -k for self-signed TLS
 #
 # Usage:
-#   cp configs/ranger.env.example configs/ranger.env && edit RANGER_PASSWORD
+#   edit configs/ranger.env  # set RANGER_PASSWORD
 #   RANGER_ADD_USERS=registry,flink ./ranger-yarn-all-queue-users-add.sh
 #   RANGER_PASSWORD=secret RANGER_ADD_USERS=registry,flink ./ranger-yarn-all-queue-users-add.sh
 #   ./ranger-yarn-all-queue-users-add.sh druid nifi   # same as adding to RANGER_ADD_USERS
@@ -160,7 +160,7 @@ if [[ -z "${RANGER_BASE_URL:-}" ]]; then
   [[ -n "$AMBARI_USER" && -n "$AMBARI_PASSWORD" ]] || die "Ambari credentials required when RANGER_BASE_URL is unset."
 fi
 
-[[ -n "${RANGER_PASSWORD:-}" ]] || die "Ranger password missing. Export RANGER_PASSWORD, set RANGER_PASSWORD_FILE, or create ${RANGER_ENV_FILE} (copy from ${SCRIPT_DIR}/configs/ranger.env.example). REST user is ${RANGER_USER}."
+[[ -n "${RANGER_PASSWORD:-}" ]] || die "Ranger password missing. Export RANGER_PASSWORD, set RANGER_PASSWORD_FILE, or edit ${RANGER_ENV_FILE}. REST user is ${RANGER_USER}."
 
 _merge="${RANGER_ADD_USERS:-}"
 for a in "$@"; do

@@ -170,7 +170,7 @@ elif [[ -f "$AMBARI_CONFIG_FILE" ]]; then
 elif [[ -n "${AMBARI_USER:-}" && -n "${AMBARI_PASSWORD:-}" ]]; then
   :
 else
-  die "Missing Ambari credentials. Create ${AMBARI_CONFIG_FILE} (copy from ${SCRIPT_DIR}/configs/ambari.env.example) or set AMBARI_USER and AMBARI_PASSWORD. To skip the clusters API, set CLUSTER_NAME (and set KUDU_MASTER_ADDRESSES or keep Ambari creds for the KUDU_MASTER API)."
+  die "Missing Ambari credentials. Edit ${AMBARI_CONFIG_FILE} or set AMBARI_USER and AMBARI_PASSWORD. To skip the clusters API, set CLUSTER_NAME (and set KUDU_MASTER_ADDRESSES or keep Ambari creds for the KUDU_MASTER API)."
 fi
 
 AMBARI_BASE_URL="${AMBARI_BASE_URL:-${_cfg_AMBARI_BASE_URL:-http://10.101.11.22:8080}}"

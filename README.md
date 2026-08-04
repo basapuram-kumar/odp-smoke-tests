@@ -8,13 +8,15 @@ Shell helpers to run small end-to-end checks against Hadoop ecosystem components
 
 ## Configuration
 
-### `configs/ambari.env` / `configs/ambari.config` (create from example)
+Config files live under `configs/*.env` and are loaded automatically by the smoke scripts. Edit them for your cluster (Ambari URL/password, Ranger password, etc.). No copy/rename step is required.
 
-Used by Ambari smoke scripts (Quick Links UI, Service Checks, and others). Both filenames are accepted; `ambari.env` is preferred when both exist. Both are gitignored.
+### `configs/ambari.env` / `configs/ambari.config`
+
+Used by Ambari smoke scripts (Quick Links UI, Service Checks, and others). Both filenames are accepted; `ambari.env` is preferred when both exist.
 
 ```bash
-cp configs/ambari.env.example configs/ambari.env
 # edit AMBARI_BASE_URL / AMBARI_USER / AMBARI_PASSWORD if needed
+vi configs/ambari.env
 ```
 
 Variables: `AMBARI_BASE_URL`, `AMBARI_USER`, `AMBARI_PASSWORD` (optional `CLUSTER_NAME`).
@@ -30,139 +32,113 @@ SC_SERVICES=HDFS,YARN,ZOOKEEPER ./ambari-service-checks-smoke.sh
 ### `configs/ranger.env` (optional, for Ranger REST scripts)
 
 ```bash
-cp configs/ranger.env.example configs/ranger.env
 # set RANGER_PASSWORD (and optionally RANGER_BASE_URL)
+vi configs/ranger.env
 ```
 
-Used by `ranger-yarn-all-queue-users-add.sh` and `ranger-plugin-connection-smoke.sh`. `ranger.env` is gitignored.
+Used by `ranger-yarn-all-queue-users-add.sh`, `ranger-plugin-connection-smoke.sh`, and `ranger-kms-sample-smoke.sh`.
 
 ### `configs/ranger-kms.env` (optional, for `ranger-kms-sample-smoke.sh`)
 
 ```bash
-cp configs/ranger-kms.env.example configs/ranger-kms.env
 # optionally set KMS_PROVIDER / KMS_KEYTAB
+vi configs/ranger-kms.env
 ```
-
-`ranger-kms.env` is gitignored.
 
 You can skip Ambari for some flows by exporting **`CLUSTER_NAME`** (and, for Kudu CLI master override, **`KUDU_MASTER_ADDRESSES`** when documented below).
 
 ### `configs/hive.env` (optional)
 
-Only if you want to override Hive-related settings. See `configs/hive.env.example`. `hive.env` is gitignored.
+Only if you want to override Hive-related settings. See `configs/hive.env`.
 
 ### `configs/zeppelin.env` (optional, for `zeppelin-editors-smoke.sh`)
 
 ```bash
-cp configs/zeppelin.env.example configs/zeppelin.env
 # set ZEPPELIN_PASSWORD (and optionally ZEPPELIN_BASE_URL)
+vi configs/zeppelin.env
 ```
-
-`zeppelin.env` is gitignored.
 
 ### `configs/airflow.env` (optional, for `airflow-sample-smoke.sh`)
 
 ```bash
-cp configs/airflow.env.example configs/airflow.env
 # optionally set AIRFLOW_BASE_URL / AIRFLOW_HOME
+vi configs/airflow.env
 ```
-
-`airflow.env` is gitignored.
 
 ### `configs/clickhouse.env` (optional, for `clickhouse-sample-smoke.sh`)
 
 ```bash
-cp configs/clickhouse.env.example configs/clickhouse.env
 # optionally set CLICKHOUSE_HTTP_URL / password
+vi configs/clickhouse.env
 ```
-
-`clickhouse.env` is gitignored.
 
 ### `configs/druid.env` (optional, for `druid-sample-smoke.sh`)
 
 ```bash
-cp configs/druid.env.example configs/druid.env
 # optionally set DRUID_BROKER_URL / DRUID_SKIP_INGEST
+vi configs/druid.env
 ```
-
-`druid.env` is gitignored.
 
 ### `configs/pinot.env` (optional, for `pinot-sample-smoke.sh`)
 
 ```bash
-cp configs/pinot.env.example configs/pinot.env
 # optionally set PINOT_CONTROLLER_URL / PINOT_SKIP_INGEST
+vi configs/pinot.env
 ```
-
-`pinot.env` is gitignored.
 
 ### `configs/ozone.env` (optional, for `ozone-sample-smoke.sh`)
 
 ```bash
-cp configs/ozone.env.example configs/ozone.env
 # optionally set OZONE_CONF_DIR / OZONE_KEYTAB / OZONE_SKIP_HTTP
+vi configs/ozone.env
 ```
-
-`ozone.env` is gitignored.
 
 ### `configs/nifi.env`, `configs/nifi-registry.env` (optional)
 
 ```bash
-cp configs/nifi.env.example configs/nifi.env
-cp configs/nifi-registry.env.example configs/nifi-registry.env
 # optionally set NIFI_URL / NIFI_REGISTRY_URL to skip Ambari discovery
+vi configs/nifi.env
+vi configs/nifi-registry.env
 ```
-
-Both are gitignored.
 
 ### `configs/jupyterhub.env` (optional, for `jupyterhub-sample-smoke.sh`)
 
 ```bash
-cp configs/jupyterhub.env.example configs/jupyterhub.env
 # optionally set JUPYTERHUB_URL / JUPYTERHUB_BASE_URL / JUPYTERHUB_PASSWORD
+vi configs/jupyterhub.env
 ```
-
-`jupyterhub.env` is gitignored.
 
 ### `configs/hue.env` (optional, for `hue-sample-smoke.sh`)
 
 ```bash
-cp configs/hue.env.example configs/hue.env
 # set HUE_USER / HUE_PASSWORD if they differ from hue/hue
+vi configs/hue.env
 ```
-
-`hue.env` is gitignored.
 
 ### `configs/knox.env` (optional, for `knox-sample-smoke.sh`)
 
 ```bash
-cp configs/knox.env.example configs/knox.env
 # optionally set KNOX_URL / KNOX_USER / KNOX_PASSWORD
+vi configs/knox.env
 ```
-
-`knox.env` is gitignored.
 
 ### `configs/infra-solr.env` (optional, for `infra-solr-sample-smoke.sh`)
 
 ```bash
-cp configs/infra-solr.env.example configs/infra-solr.env
 # optionally set INFRA_SOLR_HOSTS / INFRA_SOLR_PORT / INFRA_SOLR_READ_KEYTAB
+vi configs/infra-solr.env
 ```
-
-`infra-solr.env` is gitignored.
 
 ### `configs/zookeeper.env` (optional, for `zookeeper-sample-smoke.sh`)
 
 ```bash
-cp configs/zookeeper.env.example configs/zookeeper.env
 # optionally set ZOOKEEPER_HOSTS / ZOOKEEPER_ADMIN_PORT / ZOOKEEPER_EXPECTED_ZNODES
+vi configs/zookeeper.env
 ```
-
-`zookeeper.env` is gitignored.
 
 ### `configs/sqoop.env` (optional, for `sqoop-smoke-test.sh`)
 
-Copy from `configs/sqoop.env.example` if you need non-default JDBC host, user, or password. `sqoop.env` is gitignored. If you previously copied an older example that set **`hive`** / **`sqoop_test`**, remove or update the file so it matches `sql/sqoop-smoke-mysql-setup.sql` (database **`sqoop_smoke`**, user **`sqoop_smoke`**).
+Edit `configs/sqoop.env` if you need a non-default JDBC host, user, or password. If an older local file still has **`hive`** / **`sqoop_test`**, update it to match `sql/sqoop-smoke-mysql-setup.sql` (database **`sqoop_smoke`**, user **`sqoop_smoke`**).
 
 ---
 
@@ -316,7 +292,7 @@ SQOOP_MYSQL_SETUP=1 ./sqoop-smoke-test.sh
 sudo ./sqoop-smoke-test.sh
 ```
 
-**Env:** `SQOOP_CONFIG_FILE`, `AMBARI_*`, `CLUSTER_NAME`, `HDFS_KEYTAB`, `SQOOP_SKIP_KINIT`, `SQOOP_MYSQL_SETUP`, `SQOOP_MYSQL_HOST`, `SQOOP_MYSQL_*`, `SQOOP_SKIP_EXPORT`, `SQOOP_MYSQL_VERIFY`, `SQOOP_HDFS_BASE_DIR`, etc. See the script header and `configs/sqoop.env.example`.
+**Env:** `SQOOP_CONFIG_FILE`, `AMBARI_*`, `CLUSTER_NAME`, `HDFS_KEYTAB`, `SQOOP_SKIP_KINIT`, `SQOOP_MYSQL_SETUP`, `SQOOP_MYSQL_HOST`, `SQOOP_MYSQL_*`, `SQOOP_SKIP_EXPORT`, `SQOOP_MYSQL_VERIFY`, `SQOOP_HDFS_BASE_DIR`, etc. See the script header and `configs/sqoop.env`.
 
 ---
 
@@ -545,7 +521,7 @@ sudo ./flink-sample-smoke.sh
 - **Users to add:** **`RANGER_ADD_USERS`** (comma/space) and/or extra script arguments; merged into the first **`policyItems`** block that grants **`admin-queue`** (same layout as the default “all - queue” policy). **`RANGER_DRY_RUN=1`** prints merged JSON only.
 
 ```bash
-cp configs/ranger.env.example configs/ranger.env && vi configs/ranger.env   # set RANGER_PASSWORD
+vi configs/ranger.env   # set RANGER_PASSWORD
 RANGER_ADD_USERS=registry,flink,nifiregistry ./ranger-yarn-all-queue-users-add.sh
 # Or export only for one run:
 export RANGER_PASSWORD='…'
@@ -555,7 +531,7 @@ RANGER_BASE_URL=http://ranger-host:6080 RANGER_YARN_SERVICE_NAME=mycluster_yarn 
   RANGER_ADD_USERS=druid ./ranger-yarn-all-queue-users-add.sh
 ```
 
-**Env:** `AMBARI_*`, `CLUSTER_NAME`, `RANGER_ENV_FILE` (alias: `RANGER_CONFIG_FILE`), `RANGER_PASSWORD_FILE`, `RANGER_BASE_URL`, `RANGER_USER`, `RANGER_PASSWORD`, `RANGER_YARN_SERVICE_NAME`, `RANGER_POLICY_NAME`, `RANGER_POLICY_ID`, `RANGER_ADD_USERS`, `RANGER_DRY_RUN`, `CURL_EXTRA_OPTS` (e.g. **`-k`** for TLS). Prefer **`configs/ranger.env`** (see **`configs/ranger.env.example`**) instead of exporting **`RANGER_PASSWORD`** on the shell.
+**Env:** `AMBARI_*`, `CLUSTER_NAME`, `RANGER_ENV_FILE` (alias: `RANGER_CONFIG_FILE`), `RANGER_PASSWORD_FILE`, `RANGER_BASE_URL`, `RANGER_USER`, `RANGER_PASSWORD`, `RANGER_YARN_SERVICE_NAME`, `RANGER_POLICY_NAME`, `RANGER_POLICY_ID`, `RANGER_ADD_USERS`, `RANGER_DRY_RUN`, `CURL_EXTRA_OPTS` (e.g. **`-k`** for TLS). Prefer **`configs/ranger.env`** instead of exporting **`RANGER_PASSWORD`** on the shell.
 
 ---
 
@@ -567,7 +543,7 @@ RANGER_BASE_URL=http://ranger-host:6080 RANGER_YARN_SERVICE_NAME=mycluster_yarn 
 - Prints a **PASS / FAIL / SKIP** summary. Exits **1** if any tested service fails (`RANGER_FAIL_ON_ERROR=1`, default).
 
 ```bash
-cp configs/ranger.env.example configs/ranger.env   # set RANGER_PASSWORD (and optional RANGER_BASE_URL)
+vi configs/ranger.env   # set RANGER_PASSWORD (and optional RANGER_BASE_URL)
 ./ranger-plugin-connection-smoke.sh
 
 # Only HDFS/YARN/Hive, or skip known-broken types:
@@ -590,7 +566,7 @@ RANGER_SKIP_TYPES=knox,kms ./ranger-plugin-connection-smoke.sh
 
 ```bash
 # On a RANGER_KMS_SERVER host; ranger.env needed for EZ put/get:
-cp configs/ranger.env.example configs/ranger.env   # set RANGER_PASSWORD
+vi configs/ranger.env   # set RANGER_PASSWORD
 sudo ./ranger-kms-sample-smoke.sh
 
 # Key lifecycle only:
@@ -615,7 +591,7 @@ KMS_SKIP_EZ=1 sudo -E ./ranger-kms-sample-smoke.sh
 - **Auth / URL:** `configs/zeppelin.env` (`ZEPPELIN_USER` / `ZEPPELIN_PASSWORD`), optional **`ZEPPELIN_BASE_URL`**, else Ambari discovery of **`ZEPPELIN_MASTER`** + `zeppelin.server.port`.
 
 ```bash
-cp configs/zeppelin.env.example configs/zeppelin.env   # set password if needed
+vi configs/zeppelin.env   # set password if needed
 ./zeppelin-editors-smoke.sh
 
 # Subset:
@@ -981,7 +957,7 @@ INFRA_SOLR_KEEP_COLLECTION=1 sudo -E ./infra-solr-sample-smoke.sh
 ## Common issues
 
 - **`kinit` principal must match the keytab** (cluster suffix for headless users, **`<service>/<FQDN>`** for service keytabs).
-- **Ambari:** use **`X-Requested-By: ambari`** and basic auth; the sample scripts match the bundled **`ambari.env.example`**.
+- **Ambari:** use **`X-Requested-By: ambari`** and basic auth; the sample scripts match the bundled **`ambari.env`**.
 - **HDFS `put` to `/tmp/hosts`:** second run can fail if the file exists; remove it or adjust the script.
 - **Kafka consumer:** `--from-beginning` reads from the start of the log; **`KAFKA_MAX_MESSAGES`** may need raising if the topic already has data.
 - **Kudu `table scan`:** native table name is usually **`impala::<db>.<table>`**; confirm with **`table list`** and set **`KUDU_NATIVE_TABLE`** if different.
@@ -1003,9 +979,9 @@ sample-jobs/
     install-airflow-prereqs-*.sh
     install-pinot-prereqs-*.sh
   configs/
-    ambari.env.example
-    hive.env.example
-    sqoop.env.example
+    ambari.env
+    hive.env
+    sqoop.env
   kafka/
     client-sasl.properties
   hbase/

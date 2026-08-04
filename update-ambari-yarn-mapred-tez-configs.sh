@@ -35,8 +35,8 @@
 #      merge users: hdfs,yarn,hive,spark,flink,pinot,kafka
 #    (calls ./ranger-yarn-all-queue-users-add.sh)
 #
-# Ambari credentials: configs/ambari.env (see configs/ambari.env.example), or env.
-# Ranger credentials: configs/ranger.env (see configs/ranger.env.example), or env.
+# Ambari credentials: configs/ambari.env, or env.
+# Ranger credentials: configs/ranger.env, or env.
 #
 # Environment (optional):
 #   AMBARI_CONFIG_FILE        default <script-dir>/configs/ambari.env

@@ -105,7 +105,7 @@ _cfg_AMBARI_PASSWORD=""
 _cfg_CLUSTER_NAME=""
 
 AMBARI_CONFIG_FILE="$(resolve_ambari_config_file)" || \
-  die "Missing Ambari config. Create configs/ambari.env (or configs/ambari.config) from configs/ambari.env.example."
+  die "Missing Ambari config. Edit configs/ambari.env (or configs/ambari.config)."
 
 load_env_file "$AMBARI_CONFIG_FILE"
 

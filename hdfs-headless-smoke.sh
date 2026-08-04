@@ -3,7 +3,7 @@
 # Fetch cluster name from Ambari, kinit as hdfs-<cluster>, run sample HDFS checks.
 # Intended to run on a cluster node as root (or a user with the hdfs headless keytab).
 #
-# Ambari credentials: read from configs/ambari.env (see ambari.env.example), or override
+# Ambari credentials: read from configs/ambari.env, or override
 # with environment variables (exported values win over the file).
 #
 # Environment (optional):
@@ -81,7 +81,7 @@ elif [[ -f "$AMBARI_CONFIG_FILE" ]]; then
 elif [[ -n "${AMBARI_USER:-}" && -n "${AMBARI_PASSWORD:-}" ]]; then
   :
 else
-  die "Missing Ambari credentials. Create ${AMBARI_CONFIG_FILE} (copy from ${SCRIPT_DIR}/configs/ambari.env.example) or set AMBARI_USER and AMBARI_PASSWORD in the environment."
+  die "Missing Ambari credentials. Edit ${AMBARI_CONFIG_FILE} or set AMBARI_USER and AMBARI_PASSWORD in the environment."
 fi
 
 AMBARI_BASE_URL="${AMBARI_BASE_URL:-${_cfg_AMBARI_BASE_URL:-http://10.101.11.22:8080}}"

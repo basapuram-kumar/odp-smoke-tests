@@ -27,7 +27,7 @@
 #   CURL_EXTRA_OPTS                       e.g. -k for self-signed TLS
 #
 # Usage:
-#   cp configs/ranger.env.example configs/ranger.env   # set RANGER_PASSWORD / URL
+#   edit configs/ranger.env   # set RANGER_PASSWORD / URL
 #   ./ranger-plugin-connection-smoke.sh
 #
 set -euo pipefail
@@ -153,7 +153,7 @@ if [[ -z "${RANGER_BASE_URL:-}" ]]; then
   [[ -n "$AMBARI_USER" && -n "$AMBARI_PASSWORD" ]] || die "Ambari credentials required when RANGER_BASE_URL is unset."
 fi
 
-[[ -n "${RANGER_PASSWORD:-}" ]] || die "Ranger password missing. Export RANGER_PASSWORD, set RANGER_PASSWORD_FILE, or create ${RANGER_ENV_FILE} (copy from ${SCRIPT_DIR}/configs/ranger.env.example)."
+[[ -n "${RANGER_PASSWORD:-}" ]] || die "Ranger password missing. Export RANGER_PASSWORD, set RANGER_PASSWORD_FILE, or edit ${RANGER_ENV_FILE}."
 
 cluster=""
 if [[ -z "${RANGER_BASE_URL:-}" ]]; then

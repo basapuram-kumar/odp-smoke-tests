@@ -1,2 +1,2 @@
-ambari.env
-hive.env
+# Optional local override (legacy filename still accepted by Ambari scripts).
+ambari.config
