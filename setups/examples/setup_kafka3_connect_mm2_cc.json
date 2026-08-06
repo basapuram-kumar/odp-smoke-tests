@@ -1,0 +1,24 @@
+{
+  "ambari": {
+    "url": "http://10.101.11.16:8080",
+    "username": "admin",
+    "password": "admin"
+  },
+  "kafka": {
+    "flavor": "kafka3",
+    "replication_factor": 1,
+    "disable_ranger_plugin": true,
+    "kerberos_realm": "ADSRE.COM"
+  },
+  "mm2": {
+    "dest_bootstrap_servers": "rl8kmm2n1:6667",
+    "dest_security_protocol": "PLAINTEXT"
+  },
+  "host_setup": {
+    "enabled": true,
+    "ssh_user": "acceldata",
+    "ssh_key": "~/Downloads/usdc.pem",
+    "dest_hosts_entry": "10.101.11.158 rl8kmm2n1 rl8kmm2n1",
+    "copy_credential_util_from": "10.101.11.134"
+  }
+}

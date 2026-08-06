@@ -140,12 +140,70 @@ vi configs/zookeeper.env
 
 Edit `configs/sqoop.env` if you need a non-default JDBC host, user, or password. If an older local file still has **`hive`** / **`sqoop_test`**, update it to match `sql/sqoop-smoke-mysql-setup.sql` (database **`sqoop_smoke`**, user **`sqoop_smoke`**).
 
+### `configs/setup-kafka-connect-mm2-cc.env` (optional, for Setups)
+
+Used by `setups/setup-kafka-connect-mm2-cc.sh`. Sets MM2 destination, SSH host prep, replication factor, and Kafka flavor (`auto` / `kafka` / `kafka3`). Ambari URL/user/password still come from `configs/ambari.env`.
+
+```bash
+vi configs/setup-kafka-connect-mm2-cc.env
+# set MM2_DEST_BOOTSTRAP_SERVERS (e.g. rl8kmm2n1:6667)
+```
+
+---
+
+## Setups
+
+Cluster setup helpers (not smoke tests). They install or configure services through Ambari before you run smokes.
+
+### `setups/setup-kafka-connect-mm2-cc.sh`
+
+Installs and configures **Kafka Connect**, **MirrorMaker2**, and **Cruise Control** for classic **KAFKA** (Kafka 2) or **KAFKA3**. Auto-detects which service is present unless `--flavor` is set.
+
+What it does:
+
+1. Reads Ambari from `configs/ambari.env` and setup defaults from `configs/setup-kafka-connect-mm2-cc.env`
+2. Adds Connect / MM2 / Cruise Control host components
+3. Applies broker/connect/MM2/CC configs (SASL, RF=1, CC metrics reporter bootstrap)
+4. Sets MM2 source to the local broker host and destination from config/CLI (same dest pattern as other clusters, e.g. `rl8kmm2n1:6667`)
+5. Optional SSH host prep: `/etc/hosts` for the MM2 dest hostname + copy `CredentialUtil.jar` for Cruise Control
+6. Installs components, restarts the broker, starts Connect / MM2 / CC
+
+```bash
+# Edit Ambari + MM2 dest defaults
+vi configs/ambari.env
+vi configs/setup-kafka-connect-mm2-cc.env
+
+# Kafka2 or Kafka3 (auto-detect)
+./setups/setup-kafka-connect-mm2-cc.sh
+
+# Explicit cluster / dest / flavor
+./setups/setup-kafka-connect-mm2-cc.sh \
+  --ambari-url http://10.101.11.23:8080 \
+  --mm2-dest rl8kmm2n1:6667 \
+  --flavor kafka
+
+./setups/setup-kafka-connect-mm2-cc.sh \
+  --ambari-url http://10.101.11.16:8080 \
+  --mm2-dest rl8kmm2n1:6667 \
+  --flavor kafka3
+
+# Use a ready-made JSON example
+./setups/setup-kafka-connect-mm2-cc.sh --config setups/examples/setup_kafka2_connect_mm2_cc.json
+./setups/setup-kafka-connect-mm2-cc.sh --config setups/examples/setup_kafka3_connect_mm2_cc.json
+
+# Preview only
+./setups/setup-kafka-connect-mm2-cc.sh --dry-run --skip-host-setup
+```
+
+Python entrypoint (same behavior, JSON config required): `setups/setup_kafka_connect_mm2_cc.py`.
+
 ---
 
 ## Scripts overview
 
 | Script | Principal / auth | Typical host |
 |--------|------------------|--------------|
+| `setups/setup-kafka-connect-mm2-cc.sh` | Ambari admin (+ optional SSH key for host prep) | Ops host that can reach Ambari; SSH to broker host for `/etc/hosts` / CredentialUtil |
 | `run-all-smoke.sh` | Runs the smoke entrypoints below and consolidates their results | Cluster node, as root |
 | `hdfs-headless-smoke.sh` | `hdfs-<cluster>` + hdfs headless keytab | Node with keytab |
 | `yarn-sample-smoke.sh` | Same as HDFS (`hdfs-<cluster>`) | YARN client / edge |
@@ -978,10 +1036,17 @@ sample-jobs/
     install-jupyterhub-prereqs-ubuntu20.sh
     install-airflow-prereqs-*.sh
     install-pinot-prereqs-*.sh
+  setups/
+    setup-kafka-connect-mm2-cc.sh
+    setup_kafka_connect_mm2_cc.py
+    examples/
+      setup_kafka2_connect_mm2_cc.json
+      setup_kafka3_connect_mm2_cc.json
   configs/
     ambari.env
     hive.env
     sqoop.env
+    setup-kafka-connect-mm2-cc.env
   kafka/
     client-sasl.properties
   hbase/

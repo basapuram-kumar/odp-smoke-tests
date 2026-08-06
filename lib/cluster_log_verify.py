@@ -28,29 +28,65 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 # ---------------------------------------------------------------------------
 # Component -> log directory / file pattern mapping
-# Paths are searched in order; first existing dir wins (then sibling dirs too).
+#
+# Derived from ODP Ambari stack + ambari-mpacks defaults:
+#   - *-env.xml log_dir / log_dir_prefix
+#   - package/templates/input.config-*.json.j2 (LogSearch file paths)
+#   - log4j / logback configs in mpacks
+#
+# Tuple: (dirs, positive filename/path tokens, negative tokens)
 # ---------------------------------------------------------------------------
 
-# (dirs, positive filename substrings/globs-as-regex, optional negative substrings)
+# (dirs, positive filename substrings, optional negative substrings)
 ComponentLogSpec = Tuple[List[str], List[str], List[str]]
 
-LOG_SPECS: Dict[str, Dict[str, ComponentLogSpec]] = {
+LOG_SPECS = {
+    # --- HDFS (hadoop-env/hdfs_log_dir_prefix=/var/log/hadoop + hdfs user) ---
+    # LogSearch: hadoop-hdfs-{namenode,datanode,journalnode,secondarynamenode,zkfc}-*.log
     "HDFS": {
-        "NAMENODE": (["/var/log/hadoop/hdfs"], ["namenode"], ["datanode", "secondary"]),
-        "DATANODE": (["/var/log/hadoop/hdfs"], ["datanode"], []),
+        "NAMENODE": (
+            ["/var/log/hadoop/hdfs"],
+            ["hadoop-hdfs-namenode", "namenode"],
+            ["datanode", "journalnode", "zkfc", "secondarynamenode"],
+        ),
+        "DATANODE": (
+            ["/var/log/hadoop/hdfs"],
+            ["hadoop-hdfs-datanode", "datanode"],
+            ["namenode", "journalnode", "secondarynamenode"],
+        ),
         "SECONDARY_NAMENODE": (
             ["/var/log/hadoop/hdfs"],
-            ["secondarynamenode", "secondary"],
+            ["hadoop-hdfs-secondarynamenode", "secondarynamenode"],
+            ["hadoop-hdfs-namenode-", "datanode"],
+        ),
+        "JOURNALNODE": (
+            ["/var/log/hadoop/hdfs"],
+            ["hadoop-hdfs-journalnode", "journalnode"],
+            ["namenode", "datanode"],
+        ),
+        "ZKFC": (
+            ["/var/log/hadoop/hdfs"],
+            ["hadoop-hdfs-zkfc", "zkfc"],
+            ["namenode", "datanode"],
+        ),
+        "NFS_GATEWAY": (
+            ["/var/log/hadoop/root", "/var/log/hadoop/hdfs"],
+            ["nfs3", "nfsgateway"],
             [],
         ),
-        "JOURNALNODE": (["/var/log/hadoop/hdfs"], ["journalnode"], []),
-        "ZKFC": (["/var/log/hadoop/hdfs"], ["zkfc"], []),
+        "ROUTER": (
+            ["/var/log/hadoop/hdfs"],
+            ["hadoop-hdfs-router", "router"],
+            ["namenode", "datanode"],
+        ),
     },
+    # --- YARN (yarn-env/yarn_log_dir_prefix=/var/log/hadoop-yarn) ---
+    # LogSearch: hadoop-yarn-{nodemanager,resourcemanager,timelineserver}-*.log
     "YARN": {
         "RESOURCEMANAGER": (
             ["/var/log/hadoop-yarn/yarn", "/var/log/hadoop/yarn"],
-            ["resourcemanager"],
-            [],
+            ["hadoop-yarn-resourcemanager", "resourcemanager"],
+            ["nodemanager", "timelineserver", "timelinereader", "registrydns"],
         ),
         "NODEMANAGER": (
             [
@@ -58,179 +94,470 @@ LOG_SPECS: Dict[str, Dict[str, ComponentLogSpec]] = {
                 "/var/log/hadoop-yarn/nodemanager",
                 "/var/log/hadoop/yarn",
             ],
-            ["nodemanager"],
-            [],
+            ["hadoop-yarn-nodemanager", "nodemanager"],
+            ["resourcemanager", "timelineserver"],
         ),
         "APP_TIMELINE_SERVER": (
             ["/var/log/hadoop-yarn/yarn", "/var/log/hadoop-yarn"],
-            ["timelineserver", "applicationhistory", "timeline"],
-            ["timelinereader", "registrydns"],
+            ["hadoop-yarn-timelineserver", "timelineserver"],
+            ["timelinereader", "registrydns", "nodemanager", "resourcemanager"],
         ),
         "TIMELINE_READER": (
             ["/var/log/hadoop-yarn/yarn"],
-            ["timelinereader", "timeline"],
-            ["registrydns"],
+            ["timelinereader", "hadoop-yarn-timelinereader"],
+            ["registrydns", "nodemanager"],
         ),
         "YARN_REGISTRY_DNS": (
             ["/var/log/hadoop-yarn/yarn", "/var/log/hadoop-yarn"],
-            ["registrydns", "registry"],
-            [],
+            ["registrydns", "hadoop-yarn-registrydns"],
+            ["nodemanager", "resourcemanager", "timelineserver"],
         ),
     },
+    # --- MAPREDUCE2 (mapred-env/mapred_log_dir_prefix=/var/log/hadoop-mapreduce) ---
     "MAPREDUCE2": {
         "HISTORYSERVER": (
             ["/var/log/hadoop-mapreduce/mapred", "/var/log/hadoop-mapreduce"],
-            ["historyserver", "jobhistory"],
+            ["hadoop-mapred-historyserver", "historyserver"],
+            ["nodemanager", "resourcemanager"],
+        ),
+    },
+    # --- ZOOKEEPER (zookeeper-env/zk_log_dir=/var/log/zookeeper) ---
+    # LogSearch: zookeeper*.log ; also zookeeper-*-server-*.out
+    "ZOOKEEPER": {
+        "ZOOKEEPER_SERVER": (
+            ["/var/log/zookeeper"],
+            ["zookeeper.log", "zookeeper-", "zookeeper_audit"],
             [],
         ),
     },
-    "ZOOKEEPER": {
-        "ZOOKEEPER_SERVER": (["/var/log/zookeeper"], ["zookeeper", "zk"], []),
-    },
+    # --- HBASE (hbase-env/hbase_log_dir=/var/log/hbase) ---
+    # LogSearch: hbase-*-master-*.log, hbase-*-regionserver-*.log, phoenix-*server.log
     "HBASE": {
-        "HBASE_MASTER": (["/var/log/hbase"], ["master"], ["regionserver"]),
-        "HBASE_REGIONSERVER": (["/var/log/hbase"], ["regionserver"], []),
-        "HBASE_THRIFT_SERVER": (["/var/log/hbase"], ["thrift"], []),
-        "PHOENIX_QUERY_SERVER": (["/var/log/hbase", "/var/log/phoenix"], ["phoenix", "queryserver"], []),
+        "HBASE_MASTER": (
+            ["/var/log/hbase"],
+            ["hbase-", "master"],
+            ["regionserver", "thrift"],
+        ),
+        "HBASE_REGIONSERVER": (
+            ["/var/log/hbase"],
+            ["hbase-", "regionserver"],
+            ["-master-", "thrift"],
+        ),
+        "HBASE_THRIFT_SERVER": (["/var/log/hbase"], ["thrift"], ["regionserver", "master"]),
+        "PHOENIX_QUERY_SERVER": (
+            ["/var/log/hbase", "/var/log/phoenix"],
+            ["phoenix", "queryserver"],
+            [],
+        ),
     },
+    # --- HIVE (hive-env/hive_log_dir=/var/log/hive) ---
+    # LogSearch: hiveserver2.log, hiveserver2Interactive.log, hivemetastore.log
     "HIVE": {
-        "HIVE_METASTORE": (["/var/log/hive"], ["metastore", "hivemetastore"], ["server2", "hiveserver"]),
-        "HIVE_SERVER": (["/var/log/hive"], ["hiveserver2", "hive-server", "server2"], []),
-        "HIVE_SERVER_INTERACTIVE": (["/var/log/hive"], ["hiveserver2", "interactive", "llap"], []),
-        "WEBHCAT_SERVER": (["/var/log/hive-hcatalog", "/var/log/webhcat"], ["webhcat", "templeton"], []),
+        "HIVE_METASTORE": (
+            ["/var/log/hive"],
+            ["hivemetastore.log", "hivemetastore"],
+            ["hiveserver2", "hiveserver2Interactive"],
+        ),
+        "HIVE_SERVER": (
+            ["/var/log/hive"],
+            ["hiveserver2.log", "hiveserver2", "hive-server2"],
+            ["hivemetastore", "hiveserver2Interactive", "Interactive"],
+        ),
+        "HIVE_SERVER_INTERACTIVE": (
+            ["/var/log/hive"],
+            ["hiveserver2Interactive", "hiveserver2-interactive", "hsi_"],
+            ["hivemetastore"],
+        ),
+        "WEBHCAT_SERVER": (
+            ["/var/log/webhcat", "/var/log/hive-hcatalog"],
+            ["webhcat", "templeton"],
+            [],
+        ),
     },
+    # --- HTTPFS mpack (httpfs_log_dir=/var/log/hadoop/httpfs) ---
+    # Files: httpfs.log, httpfs-audit.log, hadoop-httpfs-httpfs-*.log
     "HTTPFS": {
-        "HTTPFS_GATEWAY": (["/var/log/hadoop/httpfs", "/var/log/hadoop/hdfs"], ["httpfs"], []),
+        "HTTPFS_GATEWAY": (
+            ["/var/log/hadoop/httpfs"],
+            ["httpfs.log", "httpfs-audit", "hadoop-httpfs", "httpfs"],
+            ["hadoop-hdfs-namenode", "hadoop-hdfs-datanode"],
+        ),
+        "HTTPFS_SERVER": (
+            ["/var/log/hadoop/httpfs"],
+            ["httpfs.log", "httpfs-audit", "hadoop-httpfs", "httpfs"],
+            ["hadoop-hdfs-namenode", "hadoop-hdfs-datanode"],
+        ),
     },
+    # --- KAFKA (kafka-env/kafka_log_dir=/var/log/kafka) ---
+    # LogSearch: server.log, controller.log, kafka-request.log, log-cleaner.log, state-change.log
     "KAFKA": {
-        "KAFKA_BROKER": (["/var/log/kafka"], ["server", "kafka", "controller", "state-change", "log-cleaner"], []),
+        "KAFKA_BROKER": (
+            ["/var/log/kafka"],
+            ["server.log", "controller.log", "kafka-request", "log-cleaner", "state-change", "kafkaServer-gc"],
+            ["cruise-control", "mirrormaker", "connect.log"],
+        ),
+        "KAFKA_CONNECT": (["/var/log/kafka"], ["connect.log", "connect"], ["server.log", "cruise-control"]),
+        "KAFKA_MIRRORMAKER": (
+            ["/var/log/kafka"],
+            ["mirrormaker", "mirrormaker2"],
+            ["server.log", "cruise-control"],
+        ),
+        "CRUISE_CONTROL": (
+            ["/var/log/kafka/cruise-control"],
+            ["kafkacruisecontrol", "access.log"],
+            ["server.log"],
+        ),
     },
+    # --- KAFKA3 mpack (kafka3-env -> /var/log/kafka3) ---
     "KAFKA3": {
-        "KAFKA3_BROKER": (["/var/log/kafka3", "/var/log/kafka"], ["server", "kafka", "controller"], []),
-        "KAFKA3_CONNECT": (["/var/log/kafka3", "/var/log/kafka"], ["connect"], []),
-        "KAFKA3_MIRRORMAKER": (["/var/log/kafka3", "/var/log/kafka"], ["mirror", "mirrormaker"], []),
+        "KAFKA3_BROKER": (
+            ["/var/log/kafka3"],
+            ["server.log", "controller.log", "kafka3-request", "log-cleaner", "state-change"],
+            ["cruise-control", "mirrormaker", "connect"],
+        ),
+        "KAFKA3_CONNECT": (["/var/log/kafka3"], ["connect"], ["server.log"]),
+        "KAFKA3_MIRRORMAKER": (
+            ["/var/log/kafka3"],
+            ["mirrormaker", "mirrormaker2"],
+            ["server.log"],
+        ),
+        "CRUISE_CONTROL3": (
+            ["/var/log/kafka3/cruise-control3", "/var/log/kafka3/cruise-control"],
+            ["cruise-control", "access.log", "kafkacruisecontrol"],
+            ["server.log"],
+        ),
+        "KRAFT_CONTROLLER": (
+            ["/var/log/kafka3"],
+            ["server.log", "controller.log", "kafka3-request"],
+            ["mirrormaker", "connect"],
+        ),
+        "KRAFT_BROKER": (
+            ["/var/log/kafka3"],
+            ["server.log", "controller.log", "kafka3-request"],
+            ["mirrormaker", "connect"],
+        ),
     },
+    # --- OOZIE (oozie-env/oozie_log_dir=/var/log/oozie) ---
+    # LogSearch: oozie.log ; also oozie-error.log, jetty.out
     "OOZIE": {
-        "OOZIE_SERVER": (["/var/log/oozie"], ["oozie", "jetty"], []),
+        "OOZIE_SERVER": (
+            ["/var/log/oozie"],
+            ["oozie.log", "oozie-error", "oozie-instrumentation", "jetty.out", "oozie"],
+            [],
+        ),
     },
+    # --- RANGER ---
+    # LogSearch: xa_portal.log, ranger_db_patch.log, usersync.log ; tagsync.log
     "RANGER": {
-        "RANGER_ADMIN": (["/var/log/ranger/admin", "/var/log/ranger"], ["xa_portal", "ranger", "catalina", "access"], []),
-        "RANGER_USERSYNC": (["/var/log/ranger/usersync", "/var/log/ranger"], ["usersync", "unixAuth"], []),
-        "RANGER_TAGSYNC": (["/var/log/ranger/tagsync", "/var/log/ranger"], ["tagsync"], []),
+        "RANGER_ADMIN": (
+            ["/var/log/ranger/admin"],
+            ["xa_portal.log", "ranger_db_patch", "access_log", "catalina"],
+            ["usersync", "tagsync"],
+        ),
+        "RANGER_USERSYNC": (
+            ["/var/log/ranger/usersync"],
+            ["usersync.log", "usersync"],
+            ["xa_portal", "tagsync"],
+        ),
+        "RANGER_TAGSYNC": (
+            ["/var/log/ranger/tagsync"],
+            ["tagsync.log", "tagsync"],
+            ["usersync", "xa_portal"],
+        ),
     },
+    # --- RANGER_KMS (kms-env/kms_log_dir=/var/log/ranger/kms) ---
+    # LogSearch: kms.log
     "RANGER_KMS": {
-        "RANGER_KMS_SERVER": (["/var/log/ranger/kms", "/var/log/ranger/kms"], ["kms", "catalina"], []),
+        "RANGER_KMS_SERVER": (
+            ["/var/log/ranger/kms"],
+            ["kms.log", "kms-", "catalina"],
+            ["xa_portal", "usersync"],
+        ),
     },
+    # --- KNOX (hardcoded /var/log/knox) ---
+    # LogSearch: gateway.log, knoxcli.log, ldap.log
     "KNOX": {
-        "KNOX_GATEWAY": (["/var/log/knox"], ["gateway", "knox"], []),
+        "KNOX_GATEWAY": (
+            ["/var/log/knox"],
+            ["gateway.log", "gateway-audit", "knoxcli.log", "ldap.log"],
+            [],
+        ),
     },
+    # --- SPARK2 + LIVY2 ---
+    # LogSearch: spark-*-HistoryServer*.out, spark-*-HiveThriftServer2*.out, livy-*-server.out
     "SPARK2": {
-        "SPARK2_JOBHISTORYSERVER": (["/var/log/spark2", "/var/log/spark"], ["HistoryServer", "history"], []),
-        "SPARK2_THRIFTSERVER": (["/var/log/spark2", "/var/log/spark"], ["ThriftServer", "thrift"], []),
+        "SPARK2_JOBHISTORYSERVER": (
+            ["/var/log/spark2"],
+            ["HistoryServer", "org.apache.spark.deploy.history"],
+            ["HiveThriftServer", "ThriftServer", "livy"],
+        ),
+        "SPARK2_THRIFTSERVER": (
+            ["/var/log/spark2"],
+            ["HiveThriftServer2", "ThriftServer"],
+            ["HistoryServer"],
+        ),
+        "LIVY2_SERVER": (
+            ["/var/log/livy2"],
+            ["livy-", "server.out"],
+            ["HistoryServer", "spark-"],
+        ),
     },
+    # --- SPARK3 + LIVY3 (also versioned mpack dirs spark333 / spark351) ---
     "SPARK3": {
         "SPARK3_JOBHISTORYSERVER": (
-            ["/var/log/spark3", "/var/log/spark351", "/var/log/spark333", "/var/log/spark"],
-            ["HistoryServer", "history"],
-            [],
+            ["/var/log/spark3", "/var/log/spark351", "/var/log/spark333", "/var/log/spark3_3_5_1", "/var/log/spark3_3_3_3"],
+            ["HistoryServer", "org.apache.spark.deploy.history"],
+            ["HiveThriftServer", "ThriftServer", "livy"],
         ),
         "SPARK3_THRIFTSERVER": (
-            ["/var/log/spark3", "/var/log/spark351", "/var/log/spark333", "/var/log/spark"],
-            ["ThriftServer", "HiveThriftServer", "thrift"],
+            ["/var/log/spark3", "/var/log/spark351", "/var/log/spark333", "/var/log/spark3_3_5_1", "/var/log/spark3_3_3_3"],
+            ["HiveThriftServer2", "ThriftServer"],
+            ["HistoryServer"],
+        ),
+        "LIVY3_SERVER": (
+            ["/var/log/livy3", "/var/log/livy351", "/var/log/livy333"],
+            ["livy-", "livy-server", "server.out"],
+            ["HistoryServer", "spark-"],
+        ),
+    },
+    # --- ZEPPELIN (zeppelin-env/zeppelin_log_dir=/var/log/zeppelin) ---
+    # LogSearch: zeppelin-{user}-*.log
+    "ZEPPELIN": {
+        "ZEPPELIN_MASTER": (
+            ["/var/log/zeppelin"],
+            ["zeppelin-", "zeppelin.log"],
             [],
         ),
-        "LIVY3_SERVER": (["/var/log/livy3", "/var/log/livy", "/var/log/livy351", "/var/log/livy333"], ["livy"], []),
     },
-    "ZEPPELIN": {
-        "ZEPPELIN_MASTER": (["/var/log/zeppelin"], ["zeppelin"], []),
-    },
+    # --- AIRFLOW mpack ---
+    # webserver-*-access/error.log ; scheduler under logs/scheduler/
     "AIRFLOW": {
         "AIRFLOW_SCHEDULER": (
             ["/var/log/airflow/logs/scheduler", "/var/log/airflow/logs", "/var/log/airflow"],
             ["scheduler"],
-            [],
+            ["webserver"],
         ),
         "AIRFLOW_WEBSERVER": (
             ["/var/log/airflow/logs", "/var/log/airflow"],
-            ["webserver"],
-            [],
+            ["webserver-access", "webserver-error", "webserver"],
+            ["scheduler"],
         ),
         "AIRFLOW_WORKER": (
             ["/var/log/airflow/logs", "/var/log/airflow"],
-            ["worker", "celery"],
-            [],
+            ["worker", "celery", "dag_processor_manager"],
+            ["webserver"],
         ),
     },
+    # --- AMBARI_INFRA_SOLR ---
+    # LogSearch / infra-solr-env: solr.log, solr_gc.log, solr_slow_requests.log
     "AMBARI_INFRA_SOLR": {
-        "INFRA_SOLR": (["/var/log/ambari-infra-solr"], ["solr"], []),
+        "INFRA_SOLR": (
+            ["/var/log/ambari-infra-solr"],
+            ["solr.log", "solr_gc", "solr_slow_requests", "solr-"],
+            ["solr-install", "solr-client"],
+        ),
     },
+    # --- DRUID (druid-env/druid_log_dir=/var/log/druid) ---
+    # LogSearch: coordinator|overlord|historical|broker|middleManager|router.log
     "DRUID": {
-        "DRUID_BROKER": (["/var/log/druid"], ["broker"], []),
-        "DRUID_COORDINATOR": (["/var/log/druid"], ["coordinator"], []),
-        "DRUID_HISTORICAL": (["/var/log/druid"], ["historical"], []),
-        "DRUID_MIDDLEMANAGER": (["/var/log/druid"], ["middleManager", "middlemanager"], []),
-        "DRUID_OVERLORD": (["/var/log/druid"], ["overlord"], []),
-        "DRUID_ROUTER": (["/var/log/druid"], ["router"], []),
+        "DRUID_BROKER": (["/var/log/druid"], ["broker.log", "broker"], ["coordinator", "overlord"]),
+        "DRUID_COORDINATOR": (
+            ["/var/log/druid"],
+            ["coordinator.log", "coordinator"],
+            ["broker", "overlord", "historical"],
+        ),
+        "DRUID_HISTORICAL": (
+            ["/var/log/druid"],
+            ["historical.log", "historical"],
+            ["middleManager", "broker"],
+        ),
+        "DRUID_MIDDLEMANAGER": (
+            ["/var/log/druid"],
+            ["middleManager.log", "middleManager", "middlemanager"],
+            ["historical", "broker"],
+        ),
+        "DRUID_OVERLORD": (
+            ["/var/log/druid"],
+            ["overlord.log", "overlord"],
+            ["coordinator", "broker"],
+        ),
+        "DRUID_ROUTER": (["/var/log/druid"], ["router.log", "router"], ["broker", "coordinator"]),
     },
+    # --- FLINK mpack (flink-env -> /var/log/flink) ---
     "FLINK": {
         "FLINK_JOBHISTORYSERVER": (
-            ["/var/log/flink", "/var/log/flink-cli"],
-            ["history", "jobmanager", "standalone", "flink"],
-            [],
+            ["/var/log/flink"],
+            ["flink-", "historyserver", "standalonesession", "jobmanager"],
+            ["spark-", "flink-cli"],
+        ),
+        "FLINK_HISTORYSERVER": (
+            ["/var/log/flink"],
+            ["flink-", "historyserver", "standalonesession"],
+            ["spark-"],
         ),
     },
+    # --- HUE mpack (hue-env -> /var/log/hue) ---
+    # access.log, error.log, runcpserver.log, kt_renewer.log
     "HUE": {
-        "HUE_SERVER": (["/var/log/hue"], ["runcpserver", "hue", "error", "access", "kt_renewer"], []),
+        "HUE_SERVER": (
+            ["/var/log/hue"],
+            ["runcpserver.log", "access.log", "error.log", "kt_renewer", "supervisor.log", "audit.log"],
+            ["hue-install", "collectstatic", "migrate"],
+        ),
     },
+    # --- IMPALA mpack (impala-env/impala_log_dir=/var/log/impala) ---
+    # catalogd.INFO, statestored.INFO, impalad.INFO / .WARNING / .ERROR
     "IMPALA": {
         "IMPALA_CATALOG_SERVICE": (
-            ["/var/log/impala", "/var/log/impalad"],
-            ["catalogd", "catalog", "impala"],
-            [],
+            ["/var/log/impala"],
+            ["catalogd.INFO", "catalogd.WARNING", "catalogd.ERROR", "catalogd"],
+            ["impalad", "statestored"],
         ),
         "IMPALA_STATE_STORE": (
-            ["/var/log/impala", "/var/log/impalad"],
-            ["statestored", "statestore", "impala"],
-            [],
+            ["/var/log/impala"],
+            ["statestored.INFO", "statestored.WARNING", "statestored.ERROR", "statestored"],
+            ["impalad", "catalogd"],
         ),
         "IMPALA_DAEMON": (
-            ["/var/log/impala", "/var/log/impalad"],
-            ["impalad", "impaladaemon", "impala"],
+            ["/var/log/impala"],
+            ["impalad.INFO", "impalad.WARNING", "impalad.ERROR", "impalad"],
+            ["catalogd", "statestored"],
+        ),
+    },
+    # --- JUPYTER mpack ---
+    "JUPYTER": {
+        "JUPYTERHUB": (
+            ["/var/log/jupyterhub"],
+            ["jupyterhub.log", "jupyterhub"],
             [],
         ),
     },
-    "JUPYTER": {
-        "JUPYTERHUB": (["/var/log/jupyterhub", "/var/log/jupyter"], ["jupyterhub", "jupyter"], []),
-    },
+    # --- KUDU mpack (/var/log/kudu) ---
+    # kudu-master.INFO / WARNING ; kudu-tserver.INFO / WARNING (+ dated glog files)
     "KUDU": {
-        "KUDU_MASTER": (["/var/log/kudu"], ["kudu-master", "master"], ["tserver"]),
-        "KUDU_TSERVER": (["/var/log/kudu"], ["kudu-tserver", "tserver"], []),
+        "KUDU_MASTER": (
+            ["/var/log/kudu"],
+            ["kudu-master.INFO", "kudu-master.WARNING", "kudu-master.ERROR", "kudu-master"],
+            ["kudu-tserver", "tserver"],
+        ),
+        "KUDU_TSERVER": (
+            ["/var/log/kudu"],
+            ["kudu-tserver.INFO", "kudu-tserver.WARNING", "kudu-tserver.ERROR", "kudu-tserver"],
+            ["kudu-master"],
+        ),
     },
+    # --- NIFI mpack ---
+    # nifi-app.log, nifi-bootstrap.log, nifi-user.log
     "NIFI": {
-        "NIFI_MASTER": (["/var/log/nifi"], ["nifi-app", "nifi-bootstrap", "nifi"], []),
+        "NIFI_MASTER": (
+            ["/var/log/nifi"],
+            ["nifi-app", "nifi-bootstrap", "nifi-user", "nifi-setup"],
+            ["nifi-registry", "nifi-ca"],
+        ),
+        "NIFI_CA": (
+            ["/var/log/nifi"],
+            ["nifi-ca"],
+            ["nifi-app", "nifi-registry"],
+        ),
     },
+    # --- NIFI_REGISTRY mpack ---
+    # nifi-registry-app.log, nifi-registry-bootstrap.log
     "NIFI_REGISTRY": {
-        "NIFI_REGISTRY_MASTER": (["/var/log/nifi-registry"], ["nifi-registry", "nifi"], []),
+        "NIFI_REGISTRY_MASTER": (
+            ["/var/log/nifi-registry"],
+            ["nifi-registry-app", "nifi-registry-bootstrap", "nifi-registry-setup"],
+            ["nifi-app"],
+        ),
     },
+    # --- OZONE mpack (ozone-env/ozone_log_dir_prefix=/var/log/hadoop-ozone) ---
+    # LogSearch template lists ozone.log; runtime also uses om-/scm-/dn-/recon-/s3g- prefixes
     "OZONE": {
-        "OZONE_MANAGER": (["/var/log/hadoop-ozone", "/var/log/ozone"], ["om-", "ozone-om", "OMAudit", "om."], []),
+        "OZONE_MANAGER": (
+            ["/var/log/hadoop-ozone"],
+            ["ozone-om", "om-", "OMAudit", "om.log", "ozone.log"],
+            ["scm-", "dn-", "recon-", "s3g-"],
+        ),
         "OZONE_STORAGE_CONTAINER_MANAGER": (
-            ["/var/log/hadoop-ozone", "/var/log/ozone"],
-            ["scm-", "ozone-scm", "SCMAudit", "scm."],
-            [],
+            ["/var/log/hadoop-ozone"],
+            ["ozone-scm", "scm-", "SCMAudit", "scm.log", "ozone.log"],
+            ["om-", "dn-", "recon-", "s3g-"],
         ),
         "OZONE_DATANODE": (
-            ["/var/log/hadoop-ozone", "/var/log/ozone"],
-            ["dn-", "datanode", "ozone-datanode"],
+            ["/var/log/hadoop-ozone"],
+            ["ozone-datanode", "dn-", "dn-audit", "dn-container", "ozone.log"],
+            ["om-", "scm-", "recon-", "s3g-"],
+        ),
+        "OZONE_RECON": (
+            ["/var/log/hadoop-ozone"],
+            ["ozone-recon", "recon-", "recon.log", "ozone.log"],
+            ["om-", "scm-", "dn-", "s3g-"],
+        ),
+        "OZONE_S3_GATEWAY": (
+            ["/var/log/hadoop-ozone"],
+            ["ozone-s3", "s3g-", "s3gateway", "s3g.log", "ozone.log"],
+            ["om-", "scm-", "dn-", "recon-"],
+        ),
+    },
+    # --- REGISTRY mpack (registry-env -> /var/log/registry) ---
+    # LogSearch: registry.log
+    "REGISTRY": {
+        "REGISTRY_SERVER": (
+            ["/var/log/registry"],
+            ["registry.log", "registry.out", "registry.err", "registry-"],
             [],
         ),
-        "OZONE_RECON": (["/var/log/hadoop-ozone", "/var/log/ozone"], ["recon", "ozone-recon"], []),
-        "OZONE_S3_GATEWAY": (["/var/log/hadoop-ozone", "/var/log/ozone"], ["s3g", "s3gateway", "ozone-s3"], []),
     },
-    "REGISTRY": {
-        "REGISTRY_SERVER": (["/var/log/registry"], ["registry"], []),
+    # --- PINOT mpack ---
+    "PINOT": {
+        "PINOT_CONTROLLER": (
+            ["/var/log/pinot"],
+            ["pinot-controller"],
+            ["pinot-broker", "pinot-server", "pinot-minion"],
+        ),
+        "PINOT_BROKER": (
+            ["/var/log/pinot"],
+            ["pinot-broker"],
+            ["pinot-controller", "pinot-server", "pinot-minion"],
+        ),
+        "PINOT_SERVER": (
+            ["/var/log/pinot"],
+            ["pinot-server"],
+            ["pinot-controller", "pinot-broker", "pinot-minion"],
+        ),
+        "PINOT_MINION": (
+            ["/var/log/pinot"],
+            ["pinot-minion"],
+            ["pinot-controller", "pinot-broker", "pinot-server"],
+        ),
     },
-}
+    # --- TRINO mpack ---
+    "TRINO": {
+        "TRINO_COORDINATOR": (["/var/log/trino"], ["trino.log", "server.log", "trino"], []),
+        "TRINO_WORKER": (["/var/log/trino"], ["trino.log", "server.log", "trino"], []),
+    },
+    # --- CLICKHOUSE mpack ---
+    "CLICKHOUSE": {
+        "CLICKHOUSE_SERVER": (
+            ["/var/log/clickhouse-server", "/var/log/clickhouse-service"],
+            ["clickhouse-server"],
+            ["clickhouse-keeper"],
+        ),
+        "CLICKHOUSE_KEEPER": (
+            ["/var/log/clickhouse-keeper"],
+            ["clickhouse-keeper"],
+            ["clickhouse-server"],
+        ),
+        "CLICKHOUSE_WEBSERVER": (
+            ["/var/log/clickhouse-service"],
+            ["clickhouse-web-server", "clickhouse-service"],
+            ["clickhouse-server", "clickhouse-keeper"],
+        ),
+    },
+    # --- MLFLOW mpack ---
+    "MLFLOW": {
+        "MLFLOW_SERVER": (["/var/log/mlflow"], ["mlflow.log", "mlflow"], []),
+    },
+}  # type: Dict[str, Dict[str, ComponentLogSpec]]
 
 # Services / components that are client-only or have no daemon logs by design
 DEFAULT_SKIP_COMPONENTS = {
@@ -257,20 +584,41 @@ DEFAULT_SKIP_COMPONENTS = {
 
 DEFAULT_SKIP_SERVICES = {"KERBEROS", "TEZ", "SQOOP"}
 
-# Fallback: /var/log/<service_lower> and soft name variants
-SERVICE_LOG_DIR_FALLBACKS: Dict[str, List[str]] = {
+# Fallback: /var/log/<service_lower> and soft name variants (Ambari/mpack defaults)
+SERVICE_LOG_DIR_FALLBACKS = {
     "AMBARI_INFRA_SOLR": ["/var/log/ambari-infra-solr"],
-    "MAPREDUCE2": ["/var/log/hadoop-mapreduce", "/var/log/hadoop/mapreduce"],
-    "YARN": ["/var/log/hadoop-yarn", "/var/log/hadoop/yarn"],
-    "HDFS": ["/var/log/hadoop/hdfs", "/var/log/hadoop"],
-    "OZONE": ["/var/log/hadoop-ozone", "/var/log/ozone"],
-    "SPARK2": ["/var/log/spark2", "/var/log/spark"],
-    "SPARK3": ["/var/log/spark3", "/var/log/spark"],
-    "RANGER_KMS": ["/var/log/ranger/kms", "/var/log/ranger"],
+    "MAPREDUCE2": ["/var/log/hadoop-mapreduce/mapred", "/var/log/hadoop-mapreduce"],
+    "YARN": ["/var/log/hadoop-yarn/yarn", "/var/log/hadoop-yarn"],
+    "HDFS": ["/var/log/hadoop/hdfs"],
+    "OZONE": ["/var/log/hadoop-ozone"],
+    "SPARK2": ["/var/log/spark2"],
+    "SPARK3": ["/var/log/spark3", "/var/log/spark351", "/var/log/spark333"],
+    "RANGER": ["/var/log/ranger/admin", "/var/log/ranger"],
+    "RANGER_KMS": ["/var/log/ranger/kms"],
+    "NIFI": ["/var/log/nifi"],
     "NIFI_REGISTRY": ["/var/log/nifi-registry"],
-    "JUPYTER": ["/var/log/jupyterhub", "/var/log/jupyter"],
+    "JUPYTER": ["/var/log/jupyterhub"],
     "HTTPFS": ["/var/log/hadoop/httpfs"],
-}
+    "KAFKA": ["/var/log/kafka"],
+    "KAFKA3": ["/var/log/kafka3"],
+    "AIRFLOW": ["/var/log/airflow/logs", "/var/log/airflow"],
+    "IMPALA": ["/var/log/impala"],
+    "HUE": ["/var/log/hue"],
+    "KUDU": ["/var/log/kudu"],
+    "KNOX": ["/var/log/knox"],
+    "DRUID": ["/var/log/druid"],
+    "FLINK": ["/var/log/flink"],
+    "REGISTRY": ["/var/log/registry"],
+    "ZEPPELIN": ["/var/log/zeppelin"],
+    "ZOOKEEPER": ["/var/log/zookeeper"],
+    "HBASE": ["/var/log/hbase"],
+    "HIVE": ["/var/log/hive"],
+    "OOZIE": ["/var/log/oozie"],
+    "PINOT": ["/var/log/pinot"],
+    "TRINO": ["/var/log/trino"],
+    "CLICKHOUSE": ["/var/log/clickhouse-server", "/var/log/clickhouse-service"],
+    "MLFLOW": ["/var/log/mlflow"],
+}  # type: Dict[str, List[str]]
 
 
 class HostComponent(object):

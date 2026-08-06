@@ -2,6 +2,18 @@
 
 Utility to verify that every Ambari **STARTED** host-component is writing logs under `/var/log/` (service-named dirs, with known path overrides), optionally after an Ambari restart.
 
+## Log name sources
+
+Component log dirs and filename tokens come from Ambari stack + mpack defaults
+(`*-env.xml` log dirs and LogSearch `input.config-*.json.j2` paths), for example:
+
+- HDFS: `/var/log/hadoop/hdfs/hadoop-hdfs-namenode-*.log`
+- YARN: `/var/log/hadoop-yarn/yarn/hadoop-yarn-resourcemanager-*.log`
+- HIVE: `/var/log/hive/hiveserver2.log`, `hivemetastore.log`
+- RANGER: `/var/log/ranger/admin/xa_portal.log`
+- KNOX: `/var/log/knox/gateway.log`
+- OZONE: `/var/log/hadoop-ozone` (`ozone.log` / `om-` / `scm-` / `dn-` / ...)
+
 ## What it does
 
 1. Discovers the cluster, hosts, and STARTED host-components from Ambari REST
@@ -9,7 +21,7 @@ Utility to verify that every Ambari **STARTED** host-component is writing logs u
 3. Snapshots matching log files under `/var/log/...`
 4. Optionally restarts the component via Ambari `RESTART`, waits for completion, then re-checks growth
 5. Tails recent log lines for `ERROR` / `FATAL` / `Exception`
-6. Writes a markdown + TSV report under `reports/log-verify/`
+6. Writes HTML / JSON / markdown / TSV reports under `reports/log-verify/`
 
 Client-only components (`*_CLIENT`, TEZ, SQOOP, KERBEROS, ...) are skipped by default.
 
