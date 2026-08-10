@@ -7,16 +7,29 @@ Supports classic KAFKA (kafka2) and KAFKA3 using the same flow used on:
   - k3upg     (Kafka3): Connect + MM2 + Cruise Control3
 
 Usage:
-  python3 setup_kafka_connect_mm2_cc.py --config setup_kafka_connect_mm2_cc.example.json
+  # Both Kafka2 and Kafka3 on one cluster (recommended)
+  ./setup-kafka-connect-mm2-cc.sh \\
+    --ambari-url http://10.101.11.125:8080 \\
+    --mm2-dest 10.101.11.106 \\
+    --flavor both \\
+    --target-host k2k125c2
 
-  # Override Ambari URL and MM2 destination from CLI
+  # Single flavor
   python3 setup_kafka_connect_mm2_cc.py \\
     --config my.json \\
     --ambari-url http://10.101.11.23:8080 \\
-    --mm2-dest rl8kmm2n1:6667 \\
+    --mm2-dest 10.101.11.106:6667 \\
     --flavor kafka
 
   python3 setup_kafka_connect_mm2_cc.py --config my.json --dry-run
+
+Notes:
+  - Kerberized clusters need KDC admin credential (set via ODP_KDC_PASSWORD
+    or config kdc.principal / kdc.password). Default principal admin/admin@ADSRE.COM.
+  - MM2 dest may be host or host:port. For --flavor both, pass host only
+    (ports 6667/6669 are applied per flavor).
+  - Fixes applied: super.users=User:kafka, Connect port split (8083/8084),
+    Cruise Control SASL/ZK, MM2 JAAS/keytab props, CredentialUtil.jar.
 """
 
 from __future__ import print_function
@@ -73,7 +86,7 @@ PROFILES = {
         "ranger_plugin_config": "ranger-kafka3-plugin-properties",
         "ranger_enabled_key": "ranger-kafka3-plugin-enabled",
         "default_broker_port": 6669,
-        "default_connect_port": 38083,
+        "default_connect_port": 8084,
         "default_cc_port": 9096,
         "jaas_path": "/usr/odp/current/kafka3-broker/config/kafka3_jaas.conf",
         "mm2_jaas_path": "/usr/odp/current/kafka3-broker/config/kafka3_mirrormaker2_jaas.conf",
@@ -202,8 +215,144 @@ def detect_flavor(ambari, cluster):
     if has_k2 and not has_k3:
         return "kafka"
     if has_k3 and has_k2:
-        die("Both KAFKA and KAFKA3 are installed. Set kafka.flavor explicitly to kafka or kafka3.")
+        die("Both KAFKA and KAFKA3 are installed. Set --flavor kafka, kafka3, or both.")
     die("Neither KAFKA nor KAFKA3 service found on cluster %s" % cluster)
+
+
+def resolve_flavors(ambari, cluster, configured):
+    """Return ordered list of flavors to configure."""
+    flavor = (configured or "auto").lower().strip()
+    if flavor in ("both", "all", "kafka,kafka3", "kafka2,kafka3"):
+        services = ambari.get_json(
+            "/api/v1/clusters/%s/services?fields=ServiceInfo/service_name" % cluster
+        )
+        names = [i["ServiceInfo"]["service_name"] for i in services.get("items", [])]
+        out = []
+        if "KAFKA" in names:
+            out.append("kafka")
+        if "KAFKA3" in names:
+            out.append("kafka3")
+        if not out:
+            die("flavor=both but neither KAFKA nor KAFKA3 is installed")
+        return out
+    if flavor == "auto":
+        return [detect_flavor(ambari, cluster)]
+    if flavor in ("kafka2", "kafka-2"):
+        flavor = "kafka"
+    if flavor not in PROFILES:
+        die("Unsupported flavor: %s (use auto|kafka|kafka3|both)" % flavor)
+    return [flavor]
+
+
+def resolve_mm2_dest(dest, broker_port):
+    """Allow host-only dest; append flavor broker port when missing."""
+    dest = (dest or "").strip()
+    if not dest:
+        return dest
+    # host:port or host1:port,host2:port
+    parts = [p.strip() for p in dest.split(",") if p.strip()]
+    fixed = []
+    for p in parts:
+        if ":" in p:
+            fixed.append(p)
+        else:
+            fixed.append("%s:%s" % (p, broker_port))
+    return ",".join(fixed)
+
+
+def ensure_kdc_credential(ambari, cluster, cfg, dry_run=False):
+    """Temporary KDC admin credential required to install components on kerberized clusters."""
+    sec = ambari.get_json(
+        "/api/v1/clusters/%s?fields=Clusters/security_type" % cluster
+    )
+    if (sec.get("Clusters") or {}).get("security_type") != "KERBEROS":
+        log("Cluster is not KERBEROS; skip KDC credential")
+        return
+    st, _ = ambari.request("GET", "/api/v1/clusters/%s/credentials/kdc.admin.credential" % cluster)
+    if st == 200:
+        log("KDC admin credential already present")
+        return
+    kdc = cfg.get("kdc") or {}
+    principal = (
+        kdc.get("principal")
+        or os.environ.get("ODP_KDC_PRINCIPAL")
+        or "admin/admin@ADSRE.COM"
+    )
+    password = (
+        kdc.get("password")
+        or os.environ.get("ODP_KDC_PASSWORD")
+        or ""
+    )
+    if not password:
+        warn(
+            "Kerberos cluster has no kdc.admin.credential and ODP_KDC_PASSWORD is unset; "
+            "component install may fail"
+        )
+        return
+    body = {
+        "Credential": {
+            "principal": principal,
+            "key": password,
+            "type": "temporary",
+        }
+    }
+    log("Setting temporary KDC admin credential (%s)" % principal)
+    if dry_run:
+        return
+    st, resp = ambari.request(
+        "POST", "/api/v1/clusters/%s/credentials/kdc.admin.credential" % cluster, body
+    )
+    if st in (404, 409, 400):
+        st, resp = ambari.request(
+            "PUT", "/api/v1/clusters/%s/credentials/kdc.admin.credential" % cluster, body
+        )
+    if st not in (200, 201):
+        die("Failed setting KDC credential (%s): %s" % (st, str(resp)[:400]))
+    log("KDC credential OK")
+
+
+def regenerate_keytabs(ambari, cluster, timeout_sec, dry_run=False):
+    sec = ambari.get_json(
+        "/api/v1/clusters/%s?fields=Clusters/security_type" % cluster
+    )
+    if (sec.get("Clusters") or {}).get("security_type") != "KERBEROS":
+        return
+    log("Regenerating kerberos keytabs for new components")
+    if dry_run:
+        return
+    st, resp = ambari.request(
+        "PUT",
+        "/api/v1/clusters/%s?regenerate_keytabs=true&manage_kerberos_identities=true" % cluster,
+        {"Clusters": {"security_type": "KERBEROS"}},
+    )
+    if st not in (200, 202) or not isinstance(resp, dict) or "Requests" not in resp:
+        warn("Keytab regenerate did not create a request (http=%s): %s" % (st, str(resp)[:300]))
+        return
+    rid = resp["Requests"]["id"]
+    status = wait_request(ambari, cluster, rid, timeout_sec)
+    if status != "COMPLETED":
+        die("Keytab regenerate finished with status %s" % status)
+
+
+def list_broker_hosts(ambari, cluster, broker_component):
+    # Resolve service from component name
+    service = "KAFKA3" if broker_component.startswith("KAFKA3") else "KAFKA"
+    data = ambari.get_json(
+        "/api/v1/clusters/%s/services/%s/components/%s"
+        "?fields=host_components/HostRoles/host_name" % (cluster, service, broker_component)
+    )
+    hosts = []
+    for hc in data.get("host_components") or []:
+        name = (hc.get("HostRoles") or {}).get("host_name")
+        if name:
+            hosts.append(name)
+    return sorted(hosts)
+
+
+def broker_bootstrap(hosts, port):
+    if not hosts:
+        return "localhost:%s" % port
+    return ",".join("%s:%s" % (h, port) for h in hosts)
 
 
 def resolve_cluster(ambari, configured):
@@ -219,17 +368,34 @@ def resolve_cluster(ambari, configured):
     return items[0]["Clusters"]["cluster_name"]
 
 
-def resolve_host(ambari, cluster):
+def resolve_host(ambari, cluster, target_host=None):
     data = ambari.get_json(
         "/api/v1/clusters/%s/hosts?fields=Hosts/host_name,Hosts/ip" % cluster
     )
     items = data.get("items", [])
     if not items:
         die("No hosts found in cluster %s" % cluster)
+    by_name = {i["Hosts"]["host_name"]: i["Hosts"] for i in items}
+    if target_host:
+        # Allow short hostname, FQDN, or IP match.
+        if target_host in by_name:
+            h = by_name[target_host]
+            return h["host_name"], h.get("ip", "")
+        for name, h in by_name.items():
+            if h.get("ip") == target_host or name.startswith(target_host + "."):
+                return h["host_name"], h.get("ip", "")
+        die(
+            "target host %s not found in cluster %s (hosts: %s)"
+            % (target_host, cluster, ", ".join(sorted(by_name)))
+        )
+    # Prefer second host on multi-node clusters (keeps Ambari/server host lighter).
+    idx = 1 if len(items) > 1 else 0
     if len(items) > 1:
-        warn("Multi-host cluster detected; using first host for component placement: %s"
-             % items[0]["Hosts"]["host_name"])
-    h = items[0]["Hosts"]
+        log(
+            "Multi-host cluster; placing add-ons on %s (override with --target-host)"
+            % items[idx]["Hosts"]["host_name"]
+        )
+    h = items[idx]["Hosts"]
     return h["host_name"], h.get("ip", "")
 
 
@@ -462,6 +628,7 @@ def patch_configs(cfgs, profile, host, cfg):
 
     rf = str(kafka_cfg.get("replication_factor", 1))
     min_isr = str(kafka_cfg.get("min_insync_replicas", 1))
+    apply_broker_rf = kafka_cfg.get("apply_broker_replication", True)
     broker_port = kafka_cfg.get("broker_port") or profile["default_broker_port"]
     connect_port = connect_cfg.get("rest_port") or profile["default_connect_port"]
     cc_port = cc_cfg.get("webserver_http_port") or profile["default_cc_port"]
@@ -493,11 +660,14 @@ def patch_configs(cfgs, profile, host, cfg):
         if btype not in cfgs:
             continue
         props = cfgs[btype]["properties"]
-        props["default.replication.factor"] = rf
-        props["min.insync.replicas"] = min_isr
-        props["offsets.topic.replication.factor"] = rf
-        props["transaction.state.log.replication.factor"] = rf
-        props["transaction.state.log.min.isr"] = min_isr
+        if apply_broker_rf:
+            props["default.replication.factor"] = rf
+            props["min.insync.replicas"] = min_isr
+            props["offsets.topic.replication.factor"] = rf
+            props["transaction.state.log.replication.factor"] = rf
+            props["transaction.state.log.min.isr"] = min_isr
+        # Kerberos enable often writes lowercase user:kafka which brokers ignore.
+        props["super.users"] = "User:kafka"
         if btype == profile["broker_config"] and kafka_cfg.get("disable_ranger_plugin", True):
             props["authorizer.class.name"] = authorizer
             props["cruise.control.metrics.reporter.authorizer.class.name"] = ""
@@ -527,7 +697,7 @@ def patch_configs(cfgs, profile, host, cfg):
         props["offset.storage.replication.factor"] = rf
         props["status.storage.replication.factor"] = rf
         if profile["connect_uses_listeners"]:
-            props["listeners"] = "HTTP://localhost:%s" % connect_port
+            props["listeners"] = "HTTP://0.0.0.0:%s" % connect_port
             props["rest.advertised.listener"] = "HTTP"
         else:
             props["rest.port"] = str(connect_port)
@@ -547,7 +717,16 @@ def patch_configs(cfgs, profile, host, cfg):
     if cctype in cfgs:
         props = cfgs[cctype]["properties"]
         props["bootstrap.servers"] = "%s:%s" % (host, broker_port)
-        if profile["service"] == "KAFKA3":
+        # Prefer existing multi-host ZK; else reuse broker ZK; else single-host fallback.
+        existing_zk = (props.get("zookeeper.connect") or "").strip()
+        broker_zk = ""
+        if profile["broker_config"] in cfgs:
+            broker_zk = (cfgs[profile["broker_config"]]["properties"].get("zookeeper.connect") or "").strip()
+        if "," in existing_zk:
+            pass
+        elif broker_zk:
+            props["zookeeper.connect"] = broker_zk
+        elif profile["service"] == "KAFKA3":
             props["zookeeper.connect"] = "%s:2181/kafka3" % host
         else:
             props["zookeeper.connect"] = "%s:2181" % host
@@ -657,6 +836,96 @@ def print_final_states(ambari, cluster, service):
 
 
 # ---------------------------------------------------------------------------
+# Per-flavor setup
+# ---------------------------------------------------------------------------
+
+def setup_one_flavor(ambari, cluster, host, host_ip, cfg, flavor, ops, timeout, dry):
+    profile = PROFILES[flavor]
+    service = profile["service"]
+    log("===== flavor=%s service=%s =====" % (flavor, service))
+
+    broker_hosts = list_broker_hosts(ambari, cluster, profile["broker_component"])
+    if not broker_hosts:
+        broker_hosts = [host]
+    log("Broker hosts: %s" % ",".join(broker_hosts))
+
+    # Ensure components exist (including client)
+    comps = [
+        profile.get("client_component") or ("%s_CLIENT" % ("KAFKA3" if flavor == "kafka3" else "KAFKA")),
+        profile["connect_component"],
+        profile["mm2_component"],
+        profile["cc_component"],
+    ]
+    # client component names
+    if flavor == "kafka":
+        comps[0] = "KAFKA_CLIENT"
+    else:
+        comps[0] = "KAFKA3_CLIENT"
+    for comp in comps:
+        ensure_component(ambari, cluster, service, host, comp, dry_run=dry)
+
+    if ops.get("apply_configs", True):
+        cfgs = current_service_configs(ambari, cluster, service)
+        # local copy of mm2 dest with port for this flavor
+        local_cfg = json.loads(json.dumps(cfg))
+        dest = deep_get(local_cfg, "mm2", "dest_bootstrap_servers") or ""
+        local_cfg.setdefault("mm2", {})["dest_bootstrap_servers"] = resolve_mm2_dest(
+            dest, profile["default_broker_port"]
+        )
+        desired, broker_port = patch_configs(cfgs, profile, host, local_cfg)
+        # Prefer full broker list for connect/mm2 if patch used single host
+        note = (
+            "setup_kafka_connect_mm2_cc: flavor=%s mm2_dest=%s rf=%s"
+            % (
+                flavor,
+                local_cfg["mm2"]["dest_bootstrap_servers"],
+                deep_get(cfg, "kafka", "replication_factor", default=1),
+            )
+        )
+        apply_desired_configs(ambari, cluster, desired, note, dry_run=dry)
+        log("Broker port used for configs: %s dest=%s" % (
+            broker_port, local_cfg["mm2"]["dest_bootstrap_servers"]))
+    else:
+        log("Skipping config apply")
+
+    if ops.get("install_components", True):
+        for comp in (profile["connect_component"], profile["mm2_component"], profile["cc_component"]):
+            set_host_component_state(
+                ambari, cluster, host, comp, "INSTALLED",
+                "Install %s" % comp, timeout, dry_run=dry,
+            )
+
+    if ops.get("restart_broker", True):
+        # Restart all brokers so super.users takes effect cluster-wide.
+        data = ambari.get_json(
+            "/api/v1/clusters/%s/services/%s/components/%s?fields=host_components/HostRoles/host_name"
+            % (cluster, service, profile["broker_component"])
+        )
+        for hc in data.get("host_components") or []:
+            bhost = hc["HostRoles"]["host_name"]
+            set_host_component_state(
+                ambari, cluster, bhost, profile["broker_component"], "INSTALLED",
+                "Stop %s on %s" % (profile["broker_component"], bhost), timeout, dry_run=dry,
+            )
+        for hc in data.get("host_components") or []:
+            bhost = hc["HostRoles"]["host_name"]
+            set_host_component_state(
+                ambari, cluster, bhost, profile["broker_component"], "STARTED",
+                "Start %s on %s" % (profile["broker_component"], bhost), timeout, dry_run=dry,
+            )
+
+    if ops.get("start_components", True):
+        for comp in (profile["connect_component"], profile["mm2_component"], profile["cc_component"]):
+            set_host_component_state(
+                ambari, cluster, host, comp, "STARTED",
+                "Start %s" % comp, timeout, dry_run=dry,
+            )
+
+    if not dry:
+        print_final_states(ambari, cluster, service)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -667,8 +936,19 @@ def parse_args():
     p.add_argument("--config", required=True, help="Path to JSON config file")
     p.add_argument("--ambari-url", help="Override ambari.url")
     p.add_argument("--cluster-name", help="Override ambari.cluster_name")
-    p.add_argument("--mm2-dest", help="Override mm2.dest_bootstrap_servers (example: rl8kmm2n1:6667)")
-    p.add_argument("--flavor", choices=["auto", "kafka", "kafka3"], help="Override kafka.flavor")
+    p.add_argument(
+        "--mm2-dest",
+        help="MM2 dest host or host:port (example: 10.101.11.106 or 10.101.11.106:6667)",
+    )
+    p.add_argument(
+        "--flavor",
+        choices=["auto", "kafka", "kafka3", "both"],
+        help="kafka | kafka3 | both (default auto)",
+    )
+    p.add_argument(
+        "--target-host",
+        help="Host to place Connect/MM2/Cruise Control on (hostname or IP). Default: 2nd host.",
+    )
     p.add_argument("--ssh-host", help="Override host_setup.ssh_host")
     p.add_argument("--ssh-key", help="Override host_setup.ssh_key")
     p.add_argument("--dry-run", action="store_true", help="Print actions without changing the cluster")
@@ -688,6 +968,8 @@ def main():
         cfg.setdefault("mm2", {})["dest_bootstrap_servers"] = args.mm2_dest
     if args.flavor:
         cfg.setdefault("kafka", {})["flavor"] = args.flavor
+    if args.target_host:
+        cfg.setdefault("placement", {})["target_host"] = args.target_host
     if args.ssh_host:
         cfg.setdefault("host_setup", {})["ssh_host"] = args.ssh_host
     if args.ssh_key:
@@ -710,73 +992,66 @@ def main():
     )
 
     cluster = resolve_cluster(ambari, ambari_cfg.get("cluster_name") or "")
-    host, host_ip = resolve_host(ambari, cluster)
+    target = deep_get(cfg, "placement", "target_host") or ""
+    host, host_ip = resolve_host(ambari, cluster, target_host=target or None)
     log("Cluster=%s host=%s ip=%s ambari=%s" % (cluster, host, host_ip, url))
 
-    flavor = (deep_get(cfg, "kafka", "flavor") or "auto").lower()
-    if flavor == "auto":
-        flavor = detect_flavor(ambari, cluster)
-    if flavor not in PROFILES:
-        die("Unsupported flavor: %s" % flavor)
-    profile = PROFILES[flavor]
-    service = profile["service"]
-    log("Using flavor=%s service=%s" % (flavor, service))
+    flavors = resolve_flavors(ambari, cluster, deep_get(cfg, "kafka", "flavor") or "auto")
+    log("Flavors to configure: %s" % ",".join(flavors))
 
     ops = cfg.get("operations", {})
     timeout = int(ops.get("wait_timeout_sec", 900))
     dry = args.dry_run
 
-    # Host prep (DNS for dest + CredentialUtil)
+    ensure_kdc_credential(ambari, cluster, cfg, dry_run=dry)
+
+    # Auto hosts entry from mm2 dest IP/host when not provided
+    hs = cfg.setdefault("host_setup", {})
+    if not (hs.get("dest_hosts_entry") or "").strip():
+        dest = (deep_get(cfg, "mm2", "dest_bootstrap_servers") or "").split(",")[0].strip()
+        dest_host = dest.split(":")[0]
+        # If dest looks like an IP, add "<ip> kmm31" only when user also sets alias via SETUP_DEST_HOSTS_ENTRY.
+        # Always add the bare host/IP so getent works for that token.
+        hs["dest_hosts_entry"] = "%s %s" % (dest_host, dest_host)
+
     ssh_target = deep_get(cfg, "host_setup", "ssh_host") or host_ip or host
+    # Download CredentialUtil from Ambari resources when no copy-from host given
+    if hs.get("enabled", True) and not (hs.get("copy_credential_util_from") or "").strip():
+        jar_url = url.rstrip("/") + "/resources/CredentialUtil.jar"
+        log("Ensuring CredentialUtil.jar on %s from %s" % (ssh_target, jar_url))
+        if not dry:
+            run_ssh(
+                hs.get("ssh_user") or "acceldata",
+                hs.get("ssh_key") or "",
+                ssh_target,
+                "curl -s -u %s:%s -o /tmp/CredentialUtil.jar %s && "
+                "sudo mkdir -p /var/lib/ambari-agent/cred/lib && "
+                "sudo cp /tmp/CredentialUtil.jar /var/lib/ambari-agent/cred/lib/CredentialUtil.jar && "
+                "sudo chmod 644 /var/lib/ambari-agent/cred/lib/CredentialUtil.jar"
+                % (
+                    ambari_cfg.get("username", "admin"),
+                    ambari_cfg.get("password", "admin"),
+                    jar_url,
+                ),
+                dry_run=False,
+            )
+
     host_prep(cfg, ssh_target, dry_run=dry)
 
-    # Ensure components exist
-    for comp in (profile["connect_component"], profile["mm2_component"], profile["cc_component"]):
-        ensure_component(ambari, cluster, service, host, comp, dry_run=dry)
+    # Create components for all flavors first, then regenerate keytabs once
+    for flavor in flavors:
+        profile = PROFILES[flavor]
+        service = profile["service"]
+        client = "KAFKA3_CLIENT" if flavor == "kafka3" else "KAFKA_CLIENT"
+        for comp in (client, profile["connect_component"], profile["mm2_component"], profile["cc_component"]):
+            ensure_component(ambari, cluster, service, host, comp, dry_run=dry)
 
-    # Configs
-    if ops.get("apply_configs", True):
-        cfgs = current_service_configs(ambari, cluster, service)
-        desired, broker_port = patch_configs(cfgs, profile, host, cfg)
-        note = (
-            "setup_kafka_connect_mm2_cc: flavor=%s mm2_dest=%s rf=%s"
-            % (flavor, cfg["mm2"]["dest_bootstrap_servers"], deep_get(cfg, "kafka", "replication_factor", default=1))
-        )
-        apply_desired_configs(ambari, cluster, desired, note, dry_run=dry)
-        log("Broker port used for configs: %s" % broker_port)
-    else:
-        log("Skipping config apply")
+    regenerate_keytabs(ambari, cluster, timeout, dry_run=dry)
 
-    # Install new components
-    if ops.get("install_components", True):
-        for comp in (profile["connect_component"], profile["mm2_component"], profile["cc_component"]):
-            set_host_component_state(
-                ambari, cluster, host, comp, "INSTALLED",
-                "Install %s" % comp, timeout, dry_run=dry,
-            )
+    for flavor in flavors:
+        setup_one_flavor(ambari, cluster, host, host_ip, cfg, flavor, ops, timeout, dry)
 
-    # Restart broker so CC metrics reporter / RF / authorizer take effect
-    if ops.get("restart_broker", True):
-        set_host_component_state(
-            ambari, cluster, host, profile["broker_component"], "INSTALLED",
-            "Stop %s" % profile["broker_component"], timeout, dry_run=dry,
-        )
-        set_host_component_state(
-            ambari, cluster, host, profile["broker_component"], "STARTED",
-            "Start %s" % profile["broker_component"], timeout, dry_run=dry,
-        )
-
-    # Start Connect / MM2 / CC
-    if ops.get("start_components", True):
-        for comp in (profile["connect_component"], profile["mm2_component"], profile["cc_component"]):
-            set_host_component_state(
-                ambari, cluster, host, comp, "STARTED",
-                "Start %s" % comp, timeout, dry_run=dry,
-            )
-
-    if not dry:
-        print_final_states(ambari, cluster, service)
-    log("Done")
+    log("Done (flavors=%s)" % ",".join(flavors))
 
 
 if __name__ == "__main__":

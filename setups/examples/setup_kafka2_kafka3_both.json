@@ -1,0 +1,40 @@
+{
+  "ambari": {
+    "url": "http://10.101.11.125:8080",
+    "username": "admin",
+    "password": "admin",
+    "cluster_name": ""
+  },
+  "kdc": {
+    "principal": "admin/admin@ADSRE.COM",
+    "password": ""
+  },
+  "kafka": {
+    "flavor": "both",
+    "replication_factor": 1,
+    "disable_ranger_plugin": true,
+    "kerberos_realm": "ADSRE.COM"
+  },
+  "mm2": {
+    "dest_bootstrap_servers": "10.101.11.106",
+    "dest_security_protocol": "PLAINTEXT",
+    "topics": ".*"
+  },
+  "placement": {
+    "target_host": ""
+  },
+  "host_setup": {
+    "enabled": true,
+    "ssh_user": "acceldata",
+    "ssh_key": "~/Downloads/usdc.pem",
+    "ssh_host": "",
+    "dest_hosts_entry": "10.101.11.106 kmm31 10.101.11.106"
+  },
+  "operations": {
+    "install_components": true,
+    "apply_configs": true,
+    "restart_broker": true,
+    "start_components": true,
+    "wait_timeout_sec": 900
+  }
+}

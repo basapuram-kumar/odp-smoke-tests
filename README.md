@@ -142,11 +142,20 @@ Edit `configs/sqoop.env` if you need a non-default JDBC host, user, or password.
 
 ### `configs/setup-kafka-connect-mm2-cc.env` (optional, for Setups)
 
-Used by `setups/setup-kafka-connect-mm2-cc.sh`. Sets MM2 destination, SSH host prep, replication factor, and Kafka flavor (`auto` / `kafka` / `kafka3`). Ambari URL/user/password still come from `configs/ambari.env`.
+Used by `setups/setup-kafka-connect-mm2-cc.sh`. Sets MM2 destination, SSH host prep, replication factor, and Kafka flavor (`auto` / `kafka` / `kafka3` / `both`). Ambari URL/user/password still come from `configs/ambari.env`.
 
 ```bash
 vi configs/setup-kafka-connect-mm2-cc.env
-# set MM2_DEST_BOOTSTRAP_SERVERS (e.g. rl8kmm2n1:6667)
+# set MM2_DEST_BOOTSTRAP_SERVERS (e.g. 10.101.11.106 or host:6667)
+# set KAFKA_FLAVOR=both when the cluster has both KAFKA and KAFKA3
+# set SETUP_SSH_KEY=~/Downloads/usdc.pem
+```
+
+For kerberized clusters, also export the KDC admin password used by Ambari for keytab generation:
+
+```bash
+export ODP_KDC_PASSWORD='...'
+# optional: export ODP_KDC_PRINCIPAL='admin/admin@ADSRE.COM'
 ```
 
 ---
@@ -157,45 +166,153 @@ Cluster setup helpers (not smoke tests). They install or configure services thro
 
 ### `setups/setup-kafka-connect-mm2-cc.sh`
 
-Installs and configures **Kafka Connect**, **MirrorMaker2**, and **Cruise Control** for classic **KAFKA** (Kafka 2) or **KAFKA3**. Auto-detects which service is present unless `--flavor` is set.
+Installs and configures **Kafka Connect**, **MirrorMaker2**, and **Cruise Control** for classic **KAFKA** (Kafka 2), **KAFKA3**, or **both** on the same Ambari cluster.
 
-What it does:
+| Component | Kafka 2 | Kafka 3 |
+|-----------|---------|---------|
+| Connect REST | `:8083` | `:8084` |
+| MirrorMaker2 dest port | `:6667` | `:6669` |
+| Cruise Control UI | `:9095` | `:9096` |
 
-1. Reads Ambari from `configs/ambari.env` and setup defaults from `configs/setup-kafka-connect-mm2-cc.env`
-2. Adds Connect / MM2 / Cruise Control host components
-3. Applies broker/connect/MM2/CC configs (SASL, RF=1, CC metrics reporter bootstrap)
-4. Sets MM2 source to the local broker host and destination from config/CLI (same dest pattern as other clusters, e.g. `rl8kmm2n1:6667`)
-5. Optional SSH host prep: `/etc/hosts` for the MM2 dest hostname + copy `CredentialUtil.jar` for Cruise Control
-6. Installs components, restarts the broker, starts Connect / MM2 / CC
+#### Prerequisites
+
+1. Ambari reachable (`configs/ambari.env` or `--ambari-url`)
+2. `KAFKA` and/or `KAFKA3` brokers already **STARTED**
+3. SSH access to the target broker host (`SETUP_SSH_USER` + `SETUP_SSH_KEY`) for `/etc/hosts` and `CredentialUtil.jar`
+4. Kerberized clusters: `export ODP_KDC_PASSWORD=...` (temporary Ambari KDC credential)
+5. MM2 destination Kafka reachable from the source cluster (example dest host `10.101.11.106`)
+
+#### Steps
+
+1. Edit Ambari and setup defaults:
 
 ```bash
-# Edit Ambari + MM2 dest defaults
+cd odp-smoke-tests
 vi configs/ambari.env
 vi configs/setup-kafka-connect-mm2-cc.env
-
-# Kafka2 or Kafka3 (auto-detect)
-./setups/setup-kafka-connect-mm2-cc.sh
-
-# Explicit cluster / dest / flavor
-./setups/setup-kafka-connect-mm2-cc.sh \
-  --ambari-url http://10.101.11.23:8080 \
-  --mm2-dest rl8kmm2n1:6667 \
-  --flavor kafka
-
-./setups/setup-kafka-connect-mm2-cc.sh \
-  --ambari-url http://10.101.11.16:8080 \
-  --mm2-dest rl8kmm2n1:6667 \
-  --flavor kafka3
-
-# Use a ready-made JSON example
-./setups/setup-kafka-connect-mm2-cc.sh --config setups/examples/setup_kafka2_connect_mm2_cc.json
-./setups/setup-kafka-connect-mm2-cc.sh --config setups/examples/setup_kafka3_connect_mm2_cc.json
-
-# Preview only
-./setups/setup-kafka-connect-mm2-cc.sh --dry-run --skip-host-setup
 ```
 
-Python entrypoint (same behavior, JSON config required): `setups/setup_kafka_connect_mm2_cc.py`.
+2. Set KDC password (kerberized clusters):
+
+```bash
+export ODP_KDC_PASSWORD='Acceldata@01'
+```
+
+3. Run the setup (Kafka2 + Kafka3 on one cluster):
+
+```bash
+./setups/setup-kafka-connect-mm2-cc.sh \
+  --ambari-url http://10.101.11.125:8080 \
+  --mm2-dest 10.101.11.106 \
+  --flavor both \
+  --target-host k2k125c2 \
+  --ssh-key ~/Downloads/usdc.pem
+```
+
+Or use the example JSON:
+
+```bash
+python3 setups/setup_kafka_connect_mm2_cc.py \
+  --config setups/examples/setup_kafka2_kafka3_both.json \
+  --ambari-url http://10.101.11.125:8080 \
+  --mm2-dest 10.101.11.106 \
+  --flavor both \
+  --target-host k2k125c2 \
+  --ssh-key ~/Downloads/usdc.pem
+```
+
+4. Preview only (no Ambari changes):
+
+```bash
+./setups/setup-kafka-connect-mm2-cc.sh \
+  --ambari-url http://10.101.11.125:8080 \
+  --mm2-dest 10.101.11.106 \
+  --flavor both \
+  --dry-run
+```
+
+5. Single-flavor examples (one stack only):
+
+```bash
+# Kafka2 only
+./setups/setup-kafka-connect-mm2-cc.sh \
+  --ambari-url http://10.101.11.23:8080 \
+  --mm2-dest 10.101.11.106:6667 \
+  --flavor kafka \
+  --target-host k2k125c2 \
+  --ssh-key ~/Downloads/usdc.pem
+
+# Kafka3 only
+./setups/setup-kafka-connect-mm2-cc.sh \
+  --ambari-url http://10.101.11.16:8080 \
+  --mm2-dest 10.101.11.106:6669 \
+  --flavor kafka3 \
+  --target-host k2k125c3 \
+  --ssh-key ~/Downloads/usdc.pem
+```
+
+6. Different target hosts for Kafka2 and Kafka3 on the same cluster:
+
+`--flavor both` places both stacks on one `--target-host`. To put Kafka2 add-ons on one host and Kafka3 on another, run twice (same Ambari URL and dest; change flavor and target host):
+
+```bash
+# Kafka2 Connect / MM2 / CC on host A
+./setups/setup-kafka-connect-mm2-cc.sh \
+  --ambari-url http://10.101.11.125:8080 \
+  --mm2-dest 10.101.11.106 \
+  --flavor kafka \
+  --target-host k2k125c2 \
+  --ssh-key ~/Downloads/usdc.pem
+
+# Kafka3 Connect / MM2 / CC on host B
+./setups/setup-kafka-connect-mm2-cc.sh \
+  --ambari-url http://10.101.11.125:8080 \
+  --mm2-dest 10.101.11.106 \
+  --flavor kafka3 \
+  --target-host k2k125c3 \
+  --ssh-key ~/Downloads/usdc.pem
+```
+
+#### What the script does
+
+1. Reads Ambari from `configs/ambari.env` and setup defaults from `configs/setup-kafka-connect-mm2-cc.env`
+2. Sets temporary KDC admin credential when the cluster is KERBEROS
+3. Creates Connect / MM2 / Cruise Control (and Client) host components on `--target-host` (default: 2nd cluster host)
+4. Regenerates kerberos keytabs for new components
+5. Applies configs:
+   - `super.users=User:kafka` (fixes lowercase `user:kafka` from kerberos enable)
+   - Connect SASL + bootstrap servers; Kafka3 Connect on port **8084** to avoid clash with Kafka2 **8083**
+   - MM2 `source -> dest` with dest from `--mm2-dest` (host-only expands to `:6667` / `:6669` per flavor)
+   - Cruise Control ZK/SASL + JAAS using the kafka keytab
+6. Optional SSH host prep: `/etc/hosts` for the MM2 dest + `CredentialUtil.jar` for Cruise Control
+7. Installs components, restarts brokers (so `super.users` takes effect), starts Connect / MM2 / CC
+
+#### Verify
+
+On the target host (example `k2k125c2`):
+
+```bash
+# Connect
+curl -s http://127.0.0.1:8083/
+curl -s http://127.0.0.1:8084/
+
+# Cruise Control (binds to host IP, not always localhost)
+curl -s http://$(hostname -i):9095/kafkacruisecontrol/state
+curl -s http://$(hostname -i):9096/kafkacruisecontrol/state
+
+# Processes
+ps aux | grep -E 'ConnectDistributed|MirrorMaker|KafkaCruiseControlMain' | grep -v grep
+```
+
+In Ambari UI, confirm **STARTED**: `KAFKA_CONNECT`, `KAFKA_MIRRORMAKER`, `CRUISE_CONTROL`, `KAFKA3_CONNECT`, `KAFKA3_MIRRORMAKER`, `CRUISE_CONTROL3`.
+
+#### Notes
+
+- `--target-host` is the Ambari host that runs Connect / MM2 / Cruise Control (not the MM2 destination). `--mm2-dest` is where MirrorMaker2 replicates to.
+- For `--flavor both`, pass `--mm2-dest` as a **host or IP only** (for example `10.101.11.106`). The script adds `:6667` for Kafka2 and `:6669` for Kafka3. Both stacks share one `--target-host`; use step 6 above for different hosts.
+- Dest brokers should advertise a resolvable address (IP preferred). If dest advertises a short hostname (for example `kmm31`), add it via `SETUP_DEST_HOSTS_ENTRY` in `configs/setup-kafka-connect-mm2-cc.env`.
+- Python entrypoint (JSON config required): `setups/setup_kafka_connect_mm2_cc.py`
+- Example configs: `setups/examples/setup_kafka2_kafka3_both.json`, `setup_kafka2_connect_mm2_cc.json`, `setup_kafka3_connect_mm2_cc.json`
 
 ---
 

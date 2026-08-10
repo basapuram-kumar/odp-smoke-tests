@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 #
-# Resolve cluster name from Ambari (same as hdfs-headless-smoke.sh), kinit as
-# hdfs-<cluster> with the HDFS headless keytab, then run MapReduce pi via yarn jar.
+# Resolve cluster name from Ambari (same as hdfs-headless-smoke.sh), kinit as the
+# smoke user, then run MapReduce pi via yarn jar.
+#
+# The job runs as ambari-qa rather than hdfs: the LinuxContainerExecutor lists
+# hdfs/yarn/mapred/bin in banned.users, so containers launched as hdfs are
+# rejected with "Requested user hdfs is banned".
 #
 # Ambari credentials: configs/ambari.env, or env vars.
 #
@@ -9,7 +13,9 @@
 #   AMBARI_CONFIG_FILE   default <script-dir>/configs/ambari.env
 #   AMBARI_BASE_URL, AMBARI_USER, AMBARI_PASSWORD
 #   CLUSTER_NAME         If set, skip Ambari lookup
-#   HDFS_KEYTAB          default /etc/security/keytabs/hdfs.headless.keytab
+#   SMOKE_USER           default ambari-qa
+#   SMOKE_KEYTAB         default /etc/security/keytabs/smokeuser.headless.keytab
+#   SMOKE_PRINCIPAL      default resolved from the keytab
 #   MR_EXAMPLES_JAR      default /usr/odp/current/hadoop-mapreduce-client/hadoop-mapreduce-examples.jar
 #   MR_PI_MAPS           default 1  (first arg to pi example)
 #   MR_PI_SAMPLES        default 1  (second arg to pi example)
@@ -18,7 +24,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AMBARI_CONFIG_FILE="${AMBARI_CONFIG_FILE:-${SCRIPT_DIR}/configs/ambari.env}"
-HDFS_KEYTAB="${HDFS_KEYTAB:-/etc/security/keytabs/hdfs.headless.keytab}"
+SMOKE_USER="${SMOKE_USER:-ambari-qa}"
+SMOKE_KEYTAB="${SMOKE_KEYTAB:-/etc/security/keytabs/smokeuser.headless.keytab}"
 MR_EXAMPLES_JAR="${MR_EXAMPLES_JAR:-/usr/odp/current/hadoop-mapreduce-client/hadoop-mapreduce-examples.jar}"
 MR_PI_MAPS="${MR_PI_MAPS:-1}"
 MR_PI_SAMPLES="${MR_PI_SAMPLES:-1}"
@@ -94,8 +101,8 @@ if [[ -z "${CLUSTER_NAME:-}" ]]; then
   [[ -n "$AMBARI_USER" && -n "$AMBARI_PASSWORD" ]] || die "AMBARI_USER and AMBARI_PASSWORD must be set in ${AMBARI_CONFIG_FILE} or in the environment."
 fi
 
-if [[ ! -r "$HDFS_KEYTAB" ]]; then
-  die "keytab not readable: $HDFS_KEYTAB"
+if [[ ! -r "$SMOKE_KEYTAB" ]]; then
+  die "keytab not readable: $SMOKE_KEYTAB"
 fi
 
 if [[ ! -r "$MR_EXAMPLES_JAR" ]]; then
@@ -127,13 +134,35 @@ print(name)
   )" || die "could not parse cluster name from Ambari JSON"
 fi
 
-principal="hdfs-${cluster}"
-echo "Using cluster: ${cluster}"
-echo "kinit principal: ${principal} (realm from krb5.conf / keytab)"
+# Read the principal out of the keytab: the Ambari cluster name may differ in
+# case from the principal (for example cluster Rol73upg vs ambari-qa-rol73upg).
+principal="${SMOKE_PRINCIPAL:-}"
+if [[ -z "$principal" ]]; then
+  principal="$(klist -kt "$SMOKE_KEYTAB" 2>/dev/null |
+    awk -v u="$SMOKE_USER" '$NF ~ "^" u "[-/@]" { print $NF; exit }')"
+fi
+[[ -n "$principal" ]] || principal="${SMOKE_USER}-${cluster}"
 
-kinit -kt "$HDFS_KEYTAB" "$principal" || die "kinit failed"
+echo "Using cluster: ${cluster}"
+echo "Smoke user: ${SMOKE_USER}"
+echo "kinit principal: ${principal} (keytab ${SMOKE_KEYTAB})"
+
+ccache="/tmp/krb5cc_yarn_smoke_$$"
+cleanup() {
+  rm -f "$ccache" 2>/dev/null || true
+}
+trap cleanup EXIT
 
 echo "---- yarn jar ${MR_EXAMPLES_JAR} pi ${MR_PI_MAPS} ${MR_PI_SAMPLES} ----"
-yarn jar "$MR_EXAMPLES_JAR" pi "$MR_PI_MAPS" "$MR_PI_SAMPLES"
+
+run_cmd="export KRB5CCNAME=$(printf '%q' "$ccache")
+kinit -kt $(printf '%q' "$SMOKE_KEYTAB") $(printf '%q' "$principal")
+yarn jar $(printf '%q' "$MR_EXAMPLES_JAR") pi $(printf '%q' "$MR_PI_MAPS") $(printf '%q' "$MR_PI_SAMPLES")"
+
+if [[ "$(id -un)" != "$SMOKE_USER" ]] && id -u "$SMOKE_USER" >/dev/null 2>&1; then
+  su -s /bin/bash "$SMOKE_USER" -c "set -e; $run_cmd" || die "YARN MapReduce sample failed"
+else
+  bash -c "set -e; $run_cmd" || die "YARN MapReduce sample failed"
+fi
 
 echo "OK: YARN MapReduce sample (pi) finished."

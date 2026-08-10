@@ -122,6 +122,12 @@ print(name)
 fi
 
 principal="hdfs-${cluster}"
+# The Ambari cluster name can differ in case from the principal (cluster
+# Rol73upg vs hdfs-rol73upg), so prefer whatever the keytab actually holds.
+kt_principal="$(klist -kt "$HDFS_KEYTAB" 2>/dev/null | awk '$NF ~ /^hdfs-/ { print $NF; exit }')"
+if [[ -n "$kt_principal" ]]; then
+  principal="$kt_principal"
+fi
 echo "Using cluster: ${cluster}"
 echo "kinit principal: ${principal} (realm from krb5.conf / keytab)"
 

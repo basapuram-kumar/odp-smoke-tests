@@ -10,17 +10,26 @@
 # Environment / CLI (optional):
 #   --ambari-url URL
 #   --mm2-dest HOST:PORT          e.g. rl8kmm2n1:6667
-#   --flavor auto|kafka|kafka3
+#   --flavor auto|kafka|kafka3|both
+#   --target-host HOST            place Connect/MM2/CC on this host (multi-node)
 #   --config PATH.json            use an explicit JSON config (skips generated merge)
 #   --dry-run
 #   --skip-host-setup
 #   AMBARI_BASE_URL / AMBARI_USER / AMBARI_PASSWORD / CLUSTER_NAME
-#   MM2_DEST_BOOTSTRAP_SERVERS / KAFKA_FLAVOR / SETUP_SSH_KEY / ...
+#   MM2_DEST_BOOTSTRAP_SERVERS / KAFKA_FLAVOR / SETUP_SSH_KEY / ODP_KDC_PASSWORD
 #
 # Usage:
-#   ./setups/setup-kafka-connect-mm2-cc.sh
+#   # Kafka2 + Kafka3 Connect/MM2/Cruise Control (recommended)
+#   ./setups/setup-kafka-connect-mm2-cc.sh \
+#     --ambari-url http://10.101.11.125:8080 \
+#     --mm2-dest 10.101.11.106 \
+#     --flavor both \
+#     --target-host k2k125c2 \
+#     --ssh-key ~/Downloads/usdc.pem
+#
 #   ./setups/setup-kafka-connect-mm2-cc.sh --ambari-url http://10.101.11.23:8080 --mm2-dest rl8kmm2n1:6667
-#   ./setups/setup-kafka-connect-mm2-cc.sh --flavor kafka3 --dry-run
+#   ./setups/setup-kafka-connect-mm2-cc.sh --flavor kafka --target-host rl8upg1
+#   ./setups/setup-kafka-connect-mm2-cc.sh --flavor kafka3 --target-host rl8upg2
 #   ./setups/setup-kafka-connect-mm2-cc.sh --config setups/examples/setup_kafka3_connect_mm2_cc.json
 #
 set -euo pipefail
@@ -85,6 +94,7 @@ CLI_AMBARI_URL=""
 CLI_CLUSTER_NAME=""
 CLI_MM2_DEST=""
 CLI_FLAVOR=""
+CLI_TARGET_HOST=""
 CLI_SSH_HOST=""
 CLI_SSH_KEY=""
 CLI_CONFIG=""
@@ -97,6 +107,7 @@ while [[ $# -gt 0 ]]; do
     --cluster-name) CLI_CLUSTER_NAME="${2:-}"; shift 2 ;;
     --mm2-dest) CLI_MM2_DEST="${2:-}"; shift 2 ;;
     --flavor) CLI_FLAVOR="${2:-}"; shift 2 ;;
+    --target-host) CLI_TARGET_HOST="${2:-}"; shift 2 ;;
     --ssh-host) CLI_SSH_HOST="${2:-}"; shift 2 ;;
     --ssh-key) CLI_SSH_KEY="${2:-}"; shift 2 ;;
     --config) CLI_CONFIG="${2:-}"; shift 2 ;;
@@ -125,6 +136,7 @@ export AMBARI_PASSWORD="${AMBARI_PASSWORD:-admin}"
 export CLUSTER_NAME="${CLUSTER_NAME:-}"
 export MM2_DEST
 export KAFKA_FLAVOR="${CLI_FLAVOR:-${KAFKA_FLAVOR:-auto}}"
+export SETUP_TARGET_HOST="${CLI_TARGET_HOST:-${SETUP_TARGET_HOST:-}}"
 export SETUP_SSH_HOST="${CLI_SSH_HOST:-${SETUP_SSH_HOST:-}}"
 export SETUP_SSH_KEY="${CLI_SSH_KEY:-${SETUP_SSH_KEY:-}}"
 
@@ -157,6 +169,7 @@ cfg = {
     "replication_factor": int(os.environ.get("KAFKA_REPLICATION_FACTOR", "1")),
     "min_insync_replicas": int(os.environ.get("KAFKA_MIN_INSYNC_REPLICAS", "1")),
     "disable_ranger_plugin": os.environ.get("KAFKA_DISABLE_RANGER_PLUGIN", "true").lower() in ("1", "true", "yes"),
+    "apply_broker_replication": os.environ.get("KAFKA_APPLY_BROKER_REPLICATION", "true").lower() in ("1", "true", "yes"),
     "authorizer_class": os.environ.get("KAFKA_AUTHORIZER_CLASS", ""),
     "kerberos_realm": os.environ.get("KAFKA_KERBEROS_REALM", "ADSRE.COM"),
   },
@@ -170,8 +183,11 @@ cfg = {
     "enable_source_to_dest": True,
     "enable_dest_to_source": False,
   },
-  "connect": {"rest_port": None},
-  "cruise_control": {"webserver_http_port": None},
+  "connect": {"rest_port": int(os.environ["CONNECT_REST_PORT"]) if os.environ.get("CONNECT_REST_PORT") else None},
+  "cruise_control": {"webserver_http_port": int(os.environ["CC_WEBSERVER_HTTP_PORT"]) if os.environ.get("CC_WEBSERVER_HTTP_PORT") else None},
+  "placement": {
+    "target_host": os.environ.get("SETUP_TARGET_HOST", ""),
+  },
   "host_setup": {
     "enabled": os.environ.get("SETUP_HOST_ENABLED", "true").lower() in ("1", "true", "yes"),
     "ssh_user": os.environ.get("SETUP_SSH_USER", "acceldata"),
@@ -198,6 +214,7 @@ CMD=(python3 "$PY_SCRIPT" --config "$CONFIG_PATH")
 [[ -n "$CLI_CLUSTER_NAME" ]] && CMD+=(--cluster-name "$CLI_CLUSTER_NAME")
 [[ -n "$CLI_MM2_DEST" ]] && CMD+=(--mm2-dest "$CLI_MM2_DEST")
 [[ -n "$CLI_FLAVOR" ]] && CMD+=(--flavor "$CLI_FLAVOR")
+[[ -n "$CLI_TARGET_HOST" ]] && CMD+=(--target-host "$CLI_TARGET_HOST")
 [[ -n "$CLI_SSH_HOST" ]] && CMD+=(--ssh-host "$CLI_SSH_HOST")
 [[ -n "$CLI_SSH_KEY" ]] && CMD+=(--ssh-key "$CLI_SSH_KEY")
 [[ "$DRY_RUN" -eq 1 ]] && CMD+=(--dry-run)
