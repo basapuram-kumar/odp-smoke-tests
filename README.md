@@ -29,14 +29,16 @@ After that, run scripts with no Ambari credentials on the command line:
 SC_SERVICES=HDFS,YARN,ZOOKEEPER ./ambari-service-checks-smoke.sh
 ```
 
-### `configs/ranger.env` (optional, for Ranger REST scripts)
+### `configs/ranger.env` (gitignored; for Ranger REST scripts)
 
 ```bash
-# set RANGER_PASSWORD (and optionally RANGER_BASE_URL)
+# First time (or after clone):
+cp configs/ranger.env.example configs/ranger.env
+# Lab default is Acceldata@01 — change per cluster if needed
 vi configs/ranger.env
 ```
 
-Used by `ranger-yarn-all-queue-users-add.sh`, `ranger-plugin-connection-smoke.sh`, and `ranger-kms-sample-smoke.sh`.
+`configs/ranger.env` is gitignored. Commit only `configs/ranger.env.example`. Used by `ranger-yarn-all-queue-users-add.sh`, `ranger-plugin-connection-smoke.sh`, and `ranger-kms-sample-smoke.sh`. The odp-agents Deploy UI (Agent 4 / Agent 7) also loads this file (or its own `odp-agents-cluster-automation/configs/ranger.env`) when `ODP_RANGER_PASSWORD` is unset.
 
 ### `configs/ranger-kms.env` (optional, for `ranger-kms-sample-smoke.sh`)
 
@@ -108,10 +110,24 @@ vi configs/nifi-registry.env
 vi configs/jupyterhub.env
 ```
 
-### `configs/hue.env` (optional, for `hue-sample-smoke.sh`)
+### `configs/httpfs.env` (optional, for `httpfs-sample-smoke.sh` / `setups/setup-httpfs.sh`)
 
 ```bash
-# set HUE_USER / HUE_PASSWORD if they differ from hue/hue
+vi configs/httpfs.env
+```
+
+### `configs/trino.env` (optional, for `trino-sample-smoke.sh` / `setups/setup-trino.sh`)
+
+```bash
+# optional: TRINO_RUN_SETUP=1 plus SSH_KEY for packages/keytabs/shared_key/START
+vi configs/trino.env
+```
+
+### `configs/hue.env` (optional, for `hue-sample-smoke.sh` / `setups/setup-hue.sh`)
+
+```bash
+# set HUE_USER / HUE_PASSWORD (default admin/admin)
+# optional: HUE_RUN_SETUP=1 plus SSH_KEY for MySQL/keytab/migrate/start
 vi configs/hue.env
 ```
 
@@ -163,6 +179,46 @@ export ODP_KDC_PASSWORD='...'
 ## Setups
 
 Cluster setup helpers (not smoke tests). They install or configure services through Ambari before you run smokes.
+
+### `setups/setup-httpfs.sh`
+
+Makes HttpFS startable on Kerberized ODP when Ambari never distributed `httpfs.service.keytab`. Without it, START fails with Kerberos login errors (Ambari may show `Cannot set priority of httpfs process`).
+
+```bash
+SSH_KEY=$HOME/Downloads/usdc.pem ./setups/setup-httpfs.sh
+./httpfs-sample-smoke.sh
+```
+
+### `setups/setup-trino.sh`
+
+Makes Trino startable on Kerberized ODP after common install/Kerberos/SSL gaps:
+
+1. Ambari INSTALL / yum for missing `trino_*` RPM (INSTALL_FAILED workers)
+2. Create `trino/<host>@REALM` + `/etc/security/keytabs/trino.keytab`
+3. Disable `ssl_enabled` when `ssl_keystore` is empty
+4. Ensure `shared_key` and config-properties emit `internal-communication.shared-secret` for Kerberos without SSL
+5. Ambari START `TRINO` + probe `/v1/info`
+
+```bash
+SSH_KEY=$HOME/Downloads/usdc.pem ./setups/setup-trino.sh
+./trino-sample-smoke.sh
+```
+
+### `setups/setup-hue.sh`
+
+Makes Hue startable on Kerberized ODP when Ambari left SQLite metastore wiring or the `hue.headless.keytab` was never distributed.
+
+1. MySQL DB/user/grants + `hue_metastore.ini` (`engine=mysql`)
+2. Create/export `hue-<cluster>@REALM` keytab via `kadmin.local` when the KDC is local
+3. Django `syncdb` / `migrate`
+4. Ensure form-login admin (`HUE_USER` / `HUE_PASSWORD`)
+5. Ambari START `HUE`
+
+```bash
+SSH_KEY=$HOME/Downloads/usdc.pem ./setups/setup-hue.sh
+# then:
+./hue-sample-smoke.sh
+```
 
 ### `setups/setup-kafka-connect-mm2-cc.sh`
 
@@ -321,6 +377,8 @@ In Ambari UI, confirm **STARTED**: `KAFKA_CONNECT`, `KAFKA_MIRRORMAKER`, `CRUISE
 | Script | Principal / auth | Typical host |
 |--------|------------------|--------------|
 | `setups/setup-kafka-connect-mm2-cc.sh` | Ambari admin (+ optional SSH key for host prep) | Ops host that can reach Ambari; SSH to broker host for `/etc/hosts` / CredentialUtil |
+| `setups/setup-hue.sh` | Ambari admin + SSH to Hue/KDC host | Ops host; fixes MySQL metastore + Hue keytab before `hue-sample-smoke.sh` |
+| `setups/setup-trino.sh` | Ambari admin + SSH to Trino/KDC hosts | Ops host; packages, keytabs, shared_key / empty-SSL before `trino-sample-smoke.sh` |
 | `run-all-smoke.sh` | Runs the smoke entrypoints below and consolidates their results | Cluster node, as root |
 | `hdfs-headless-smoke.sh` | `hdfs-<cluster>` + hdfs headless keytab | Node with keytab |
 | `yarn-sample-smoke.sh` | Same as HDFS (`hdfs-<cluster>`) | YARN client / edge |
@@ -352,7 +410,12 @@ In Ambari UI, confirm **STARTED**: `KAFKA_CONNECT`, `KAFKA_MIRRORMAKER`, `CRUISE
 | `nifi-sample-smoke.sh` | NiFi REST (anonymous over HTTP, SPNEGO over HTTPS) | Host that can reach NiFi (`9090` / `9091`) |
 | `nifi-registry-sample-smoke.sh` | NiFi Registry REST (anonymous over HTTP, SPNEGO over HTTPS) | Host that can reach the Registry (`61080` / `61443`) |
 | `jupyterhub-sample-smoke.sh` | JupyterHub form login (**`JUPYTERHUB_PASSWORD`**; Ambari-discovered by default) | Host that can reach JupyterHub (`8000`) |
-| `hue-sample-smoke.sh` | Hue form login (**`HUE_USER`** / **`HUE_PASSWORD`**; Ambari-discovered by default) | Host that can reach Hue UI (`8888`) |
+| `httpfs-sample-smoke.sh` | Ambari HttpFS STARTED + WebHDFS listener (401 Negotiate on Kerberos). Optional **`HTTPFS_RUN_SETUP=1`** runs `setups/setup-httpfs.sh` | Host that can reach HttpFS (`14000`); setup needs SSH to HttpFS/KDC host |
+| `setups/setup-httpfs.sh` | Create `httpfs/<host>@REALM` keytab + Ambari START HTTPFS | SSH to HttpFS / KDC host + Ambari |
+| `trino-sample-smoke.sh` | Ambari Trino STARTED + `/v1/info` on coordinator/workers. Optional **`TRINO_RUN_SETUP=1`** runs `setups/setup-trino.sh` | Host that can reach Trino (`9097`); setup needs SSH to Trino/KDC hosts |
+| `setups/setup-trino.sh` | Packages, `trino.keytab`, shared_key / empty-SSL fix, Ambari START TRINO | SSH to Trino / KDC hosts + Ambari |
+| `hue-sample-smoke.sh` | Hue UI accessibility + form login (**`HUE_USER`** / **`HUE_PASSWORD`**; Ambari-discovered by default). Optional **`HUE_RUN_SETUP=1`** runs `setups/setup-hue.sh` first | Host that can reach Hue UI (`8888`); setup needs SSH to Hue host |
+| `setups/setup-hue.sh` | MySQL metastore, `hue.headless.keytab`, migrate, form admin user, Ambari START HUE | SSH to Hue / KDC host + Ambari |
 | `knox-sample-smoke.sh` | Knox gateway HTTP basic against the topology's identity store (**`KNOX_PASSWORD`**; Ambari-discovered by default) | Host that can reach the gateway (`8443`) |
 | `ambari-quicklinks-ui-smoke.sh` | Ambari admin REST to resolve every service Quick Link, then HTTP probe | Host that can reach Ambari and the service UI ports |
 | `ambari-service-checks-smoke.sh` | Ambari admin REST: trigger + monitor each service check request | Host that can reach Ambari (checks run on cluster hosts) |
@@ -366,6 +429,14 @@ In Ambari UI, confirm **STARTED**: `KAFKA_CONNECT`, `KAFKA_MIRRORMAKER`, `CRUISE
 ## `run-all-smoke.sh`
 
 Run the master runner as root from this directory. It executes the smoke scripts in a stable order, streams each script's output, and prints one summary containing exit codes, elapsed time, and parsed `PASS` / `FAIL` / `SKIPPED` counts when available.
+
+Each script is announced and closed with a step marker so a tail of the output shows what is running and what already failed:
+
+```text
+==== (7/12) kafka3-sample-smoke.sh ====
+[INFO] (7/12) kafka3-sample-smoke.sh: running ...
+[FAIL] (7/12) kafka3-sample-smoke.sh exit=1 (checks PASS=1 FAIL=2, 44s)
+```
 
 ```bash
 # From a root shell:
@@ -555,7 +626,9 @@ OOZIE_WORKFLOWS=hive sudo -E ./oozie-sample-smoke.sh
 sudo ./kafka-sample-smoke.sh
 ```
 
-**Env:** `KAFKA_HOME`, `KAFKA_CLIENT_CONFIG` (defaults to `kafka/client-sasl.properties`), `KAFKA_BOOTSTRAP`, `KAFKA_TOPIC`, `KAFKA_MAX_MESSAGES`, `KAFKA_CREATE_TOPIC`.
+- **Always terminates:** `--max-messages` is capped at the produced count, plus `--timeout-ms` and a `timeout(1)` hard stop. Ends with a short report and exits 0/1.
+
+**Env:** `KAFKA_HOME`, `KAFKA_CLIENT_CONFIG` (defaults to `kafka/client-sasl.properties`), `KAFKA_BOOTSTRAP`, `KAFKA_TOPIC`, `KAFKA_MAX_MESSAGES`, `KAFKA_CONSUMER_TIMEOUT_MS`, `KAFKA_STEP_TIMEOUT`, `KAFKA_CREATE_TOPIC`.
 
 ---
 
@@ -563,13 +636,15 @@ sudo ./kafka-sample-smoke.sh
 
 - Same **`kafka/<FQDN>`** principal and **`kafka.service.keytab`** as Kafka 2 smoke; **`KAFKA_HOME`** defaults to **`/usr/odp/current/kafka3-broker`**. If **`KAFKA_JAAS_CONF`** is unset, uses **`conf/kafka3_client_jaas.conf`** when present, otherwise **`conf/kafka_client_jaas.conf`**.
 - Reuses **`kafka/client-sasl.properties`** by default (same **`security.protocol` / SASL** pattern as Kafka 2).
-- Loops **three** topics by default: **`kafka3-smoke-1`**, **`kafka3-smoke-2`**, **`kafka3-smoke-3`** — produce **`KAFKA_MSGS_PER_TOPIC`** lines per topic, then consume with **`--from-beginning`** and **`--max-messages`** (default **`2 * KAFKA_MSGS_PER_TOPIC`** per topic).
+- Loops **three** topics by default: **`kafka3-smoke-1`**, **`kafka3-smoke-2`**, **`kafka3-smoke-3`** — produce **`KAFKA_MSGS_PER_TOPIC`** lines per topic, then consume with **`--from-beginning`** and **`--max-messages`** (default **`KAFKA_MSGS_PER_TOPIC`**, i.e. exactly what was produced).
+- **Always terminates.** `--max-messages` is capped at the produced count, `--timeout-ms` (**`KAFKA_CONSUMER_TIMEOUT_MS`**, default `15000`) bounds idle waits, and `timeout(1)` (**`KAFKA_STEP_TIMEOUT`**, default `120`s) is a hard stop. Asking for more messages than the topic holds is what makes the console consumer hang.
+- Prints a **per-topic PASS/FAIL report** at the end and writes it to **`$KAFKA_REPORT_DIR/kafka3-smoke-report.txt`** (defaults to `SMOKE_REPORT_DIR`, else `/tmp`), then exits **0** when all topics passed and **1** otherwise.
 
 ```bash
 sudo ./kafka3-sample-smoke.sh
 ```
 
-**Env:** `KAFKA_HOME`, `KAFKA_JAAS_CONF`, `KAFKA_CLIENT_CONFIG`, `KAFKA_BOOTSTRAP`, `KAFKA_TOPICS` (space or comma list), `KAFKA_MSGS_PER_TOPIC`, `KAFKA_MAX_MESSAGES`, `KAFKA_CREATE_TOPIC`, `KAFKA_REPLICATION_FACTOR`, `KAFKA_KEYTAB`, `KAFKA_PRINCIPAL_HOST`.
+**Env:** `KAFKA_HOME`, `KAFKA_JAAS_CONF`, `KAFKA_CLIENT_CONFIG`, `KAFKA_BOOTSTRAP`, `KAFKA_TOPICS` (space or comma list), `KAFKA_MSGS_PER_TOPIC`, `KAFKA_MAX_MESSAGES`, `KAFKA_CONSUMER_TIMEOUT_MS`, `KAFKA_STEP_TIMEOUT`, `KAFKA_REPORT_DIR`, `KAFKA_CREATE_TOPIC`, `KAFKA_REPLICATION_FACTOR`, `KAFKA_KEYTAB`, `KAFKA_PRINCIPAL_HOST`.
 
 ---
 
@@ -937,15 +1012,19 @@ NIFI_REGISTRY_SKIP_WRITE=1 ./nifi-registry-sample-smoke.sh
 - **Authenticated:** form login, then `/hub/api/user` (identity + admin flag), `/hub/api/info` (spawner and authenticator class), `/hub/api/users`.
 - **Single-user server:** spawn via `POST /hub/api/users/<user>/server`, poll until `ready`, query the notebook server's `/api` (version) and `/api/kernelspecs` (default kernel), then stop it. A cleanup trap stops the server even if a check fails.
 
-**Host pre-reqs (before Ambari install):**
+**Host pre-reqs (before Ambari install):** follow
+[Jupyter Prerequisites](https://docs.acceldata.io/odp/documentation/jupyter-prerequisites)
+(`python3.11-devel` / `python3.11-dev`, Node.js 20+, `npm install -g configurable-http-proxy`).
 
 ```bash
-# RHEL 8 / 9 (Python 3.8 + Node.js 20 + configurable-http-proxy):
-# https://docs.acceldata.io/odp/odp-3.2.3.5-2/documentation/jupyter-prerequisites
+# RHEL 8 / 9 (default: Python 3.11 + Node.js 20 + configurable-http-proxy):
 sudo ./prereqs/install-jupyterhub-prereqs-rhel8.sh
 
 # Ubuntu 20.04 / 22.04:
 sudo ./prereqs/install-jupyterhub-prereqs-ubuntu20.sh
+
+# ODP *-2 release line only (Python 3.8 instead of 3.11):
+ODP_JHUB_PYTHON=3.8 sudo -E ./prereqs/install-jupyterhub-prereqs-rhel8.sh
 ```
 
 ```bash
@@ -966,20 +1045,66 @@ JUPYTERHUB_SKIP_SPAWN=1 ./jupyterhub-sample-smoke.sh
 
 ---
 
+## `httpfs-sample-smoke.sh`
+
+- Discovers Ambari **`HTTPFS_GATEWAY`** host and **`httpfs` `port`** (default **14000**).
+- Confirms Ambari **`HTTPFS`** is **STARTED**.
+- Probes `GET /webhdfs/v1/?op=LISTSTATUS` (Kerberos: expect **401** + `WWW-Authenticate: Negotiate`).
+- Optional **`HTTPFS_RUN_SETUP=1`**: runs `setups/setup-httpfs.sh` first (create `httpfs/<host>@REALM` keytab + Ambari START).
+
+```bash
+./httpfs-sample-smoke.sh
+
+HTTPFS_RUN_SETUP=1 SSH_KEY=$HOME/Downloads/usdc.pem ./httpfs-sample-smoke.sh
+
+./setups/setup-httpfs.sh
+```
+
+**Env:** `HTTPFS_URL`, `HTTPFS_HOST`, `HTTPFS_PORT`, `HTTPFS_RUN_SETUP`, `SSH_USER`, `SSH_KEY`, Ambari vars.
+
+---
+
+## `trino-sample-smoke.sh`
+
+- Discovers Ambari **`TRINO_COORDINATOR`** / **`TRINO_WORKER`** hosts and **`trino-env` `http_server_port`** (default **9097**).
+- Confirms Ambari **`TRINO`** is **STARTED**.
+- Probes `GET /v1/info` on coordinator (`coordinator=true`) and each worker (`coordinator=false`, `starting=false`).
+- Optional **`TRINO_RUN_SETUP=1`**: runs `setups/setup-trino.sh` first (packages, keytabs, shared_key / empty-SSL, Ambari START).
+
+```bash
+./trino-sample-smoke.sh
+
+TRINO_RUN_SETUP=1 SSH_KEY=$HOME/Downloads/usdc.pem ./trino-sample-smoke.sh
+
+./setups/setup-trino.sh
+```
+
+**Env:** `TRINO_URL`, `TRINO_COORDINATOR_HOST`, `TRINO_HTTP_PORT`, `TRINO_RUN_SETUP`, `SSH_USER`, `SSH_KEY`, Ambari vars.
+
+---
+
 ## `hue-sample-smoke.sh`
 
 - Discovers Ambari **`HUE_SERVER`** host, **`hue-env` `http_port`** (default **8888**), **`hue-desktop-site` `ssl_enable`**, and the auth backend from **`hue-auth-site`**.
-- **Unauthenticated:** `/desktop/debug/is_alive`, `GET /` redirect to login, `/hue/accounts/login/` (CSRF token present).
-- **Authenticated:** Django form login, then `/desktop/api2/get_config` (app list), `/useradmin/api/get_users`, `/notebook/api/get_history`.
+- Confirms Ambari **`HUE`** service is **STARTED**.
+- **Unauthenticated:** `/desktop/debug/is_alive`, `GET /` redirect to login, `/hue/accounts/login/` (CSRF token present), static CSS linked from the login page.
+- **Authenticated:** Django form login, `/hue/about/`, `/desktop/api2/get_config` (app list), `/useradmin/api/get_users`, `/notebook/api/get_history`.
+- Optional **`HUE_RUN_SETUP=1`**: runs `setups/setup-hue.sh` first (MySQL metastore wiring, `hue.headless.keytab`, Django migrate, form admin user, Ambari START). Needs **`SSH_KEY`** / **`SSH_USER`** to the Hue host (and KDC when creating the keytab).
 
 ```bash
 ./hue-sample-smoke.sh
 
+# Repair MySQL/keytab then smoke (Kerberized cluster):
+HUE_RUN_SETUP=1 SSH_KEY=$HOME/Downloads/usdc.pem ./hue-sample-smoke.sh
+
 # Liveness + login page only:
 HUE_SKIP_AUTH=1 ./hue-sample-smoke.sh
+
+# Setup only:
+./setups/setup-hue.sh
 ```
 
-**Env:** `HUE_URL`, `HUE_HOST`, `HUE_PORT`, `HUE_SSL`, `HUE_USER`, `HUE_PASSWORD`, `HUE_SKIP_AUTH`, `CURL_EXTRA_OPTS`, Ambari vars.
+**Env:** `HUE_URL`, `HUE_HOST`, `HUE_PORT`, `HUE_SSL`, `HUE_USER`, `HUE_PASSWORD`, `HUE_SKIP_AUTH`, `HUE_RUN_SETUP`, `SSH_USER`, `SSH_KEY`, `HUE_DB_*`, `CURL_EXTRA_OPTS`, Ambari vars.
 
 ---
 
@@ -1134,7 +1259,7 @@ INFRA_SOLR_KEEP_COLLECTION=1 sudo -E ./infra-solr-sample-smoke.sh
 - **`kinit` principal must match the keytab** (cluster suffix for headless users, **`<service>/<FQDN>`** for service keytabs).
 - **Ambari:** use **`X-Requested-By: ambari`** and basic auth; the sample scripts match the bundled **`ambari.env`**.
 - **HDFS `put` to `/tmp/hosts`:** second run can fail if the file exists; remove it or adjust the script.
-- **Kafka consumer:** `--from-beginning` reads from the start of the log; **`KAFKA_MAX_MESSAGES`** may need raising if the topic already has data.
+- **Kafka consumer:** `--from-beginning` reads from the start of the log. Never set **`KAFKA_MAX_MESSAGES`** above the number of messages actually produced: `kafka-console-consumer` blocks until that count is reached, so a too-high value looks like a hang after the last message prints. Both Kafka scripts cap it and also pass `--timeout-ms`.
 - **Kudu `table scan`:** native table name is usually **`impala::<db>.<table>`**; confirm with **`table list`** and set **`KUDU_NATIVE_TABLE`** if different.
 - **Flink YARN session:** **`IllegalConfigurationException`** on TaskManager memory means **`-tm`** (and total process memory) is too small for Flink’s internal minimums — raise **`FLINK_YARN_SESSION_ARGS`** (e.g. **`-tm 4096m`** or higher), or reduce reserved fractions in Flink **`config.yaml`** on the cluster.
 - **Ranger policy PUT:** Ranger expects the **full** policy document returned by GET (with merged **`users`**). If PUT fails after an upgrade, set **`RANGER_POLICY_ID`** and compare your Ranger version’s REST schema to the payload from **`RANGER_DRY_RUN=1`**.
@@ -1154,6 +1279,9 @@ sample-jobs/
     install-airflow-prereqs-*.sh
     install-pinot-prereqs-*.sh
   setups/
+    setup-httpfs.sh
+    setup-trino.sh
+    setup-hue.sh
     setup-kafka-connect-mm2-cc.sh
     setup_kafka_connect_mm2_cc.py
     examples/
@@ -1161,6 +1289,9 @@ sample-jobs/
       setup_kafka3_connect_mm2_cc.json
   configs/
     ambari.env
+    httpfs.env
+    trino.env
+    hue.env
     hive.env
     sqoop.env
     setup-kafka-connect-mm2-cc.env

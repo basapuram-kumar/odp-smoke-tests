@@ -1030,7 +1030,7 @@ for f in "${sorted[@]:-}"; do
     printf 'ERR|%s|%s\n' "$f" "$line"
     count=$((count+1))
     [ "$count" -ge 40 ] && break 2
-  done < <(tail -n "$TAIL_N" "$f" 2>/dev/null | grep -E 'ERROR|FATAL|Exception|WARN[[:space:]]' | grep -E 'ERROR|FATAL|Exception' | tail -n 12 || true)
+  done < <(tail -n "$TAIL_N" "$f" 2>/dev/null | grep -E 'ERROR|FATAL|Exception|NoSuchMethodError|ClassNotFoundException|NoClassDefFoundError|OutOfMemoryError|LinkageError|[[:space:]]Error([^a-zA-Z]|$)' | grep -E 'ERROR|FATAL|Exception|NoSuchMethodError|ClassNotFoundException|NoClassDefFoundError|OutOfMemoryError|LinkageError|Error' | tail -n 12 || true)
 done
 '''
 
@@ -1129,6 +1129,14 @@ def evaluate_status(result: ComponentResult) -> None:
         result.notes.append("NOT_GENERATING")
         return
     if result.errors_found:
+        critical = re.compile(
+            r"ClassNotFoundException|NoSuchMethodError|NoClassDefFoundError|"
+            r"OutOfMemoryError|LinkageError|UnsupportedClassVersionError"
+        )
+        if any(critical.search(e or "") for e in (result.errors_found or [])):
+            result.status = "FAIL"
+            result.notes.append("CRITICAL_ERRORS_IN_LOG")
+            return
         result.status = "WARN"
         result.notes.append("ERRORS_IN_LOG")
         return

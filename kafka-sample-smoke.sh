@@ -13,6 +13,13 @@
 #   KAFKA_REPLICATION_FACTOR used with create (default 1)
 #   KAFKA_KEYTAB         default /etc/security/keytabs/kafka.service.keytab
 #   KAFKA_PRINCIPAL_HOST default FQDN from hostname -f / hostname
+#   KAFKA_MAX_MESSAGES   messages the consumer reads (capped at what is produced,
+#                        otherwise the console consumer blocks waiting for more)
+#   KAFKA_CONSUMER_TIMEOUT_MS  consumer idle timeout, default 15000
+#   KAFKA_STEP_TIMEOUT   hard wall-clock seconds per produce/consume, default 120
+#
+# The consumer always terminates, then the script prints a report and exits
+# (0 when the expected messages were read, 1 otherwise).
 #
 set -euo pipefail
 
@@ -24,10 +31,35 @@ KAFKA_KEYTAB="${KAFKA_KEYTAB:-/etc/security/keytabs/kafka.service.keytab}"
 KAFKA_TOPIC="${KAFKA_TOPIC:-test1}"
 KAFKA_CREATE_TOPIC="${KAFKA_CREATE_TOPIC:-false}"
 KAFKA_REPLICATION_FACTOR="${KAFKA_REPLICATION_FACTOR:-1}"
+KAFKA_CONSUMER_TIMEOUT_MS="${KAFKA_CONSUMER_TIMEOUT_MS:-15000}"
+KAFKA_STEP_TIMEOUT="${KAFKA_STEP_TIMEOUT:-120}"
+
+TIMEOUT_BIN=""
+if command -v timeout >/dev/null 2>&1; then
+  TIMEOUT_BIN="$(command -v timeout)"
+fi
 
 die() {
   echo "ERROR: $*" >&2
   exit 1
+}
+
+# Wrap a step so it can never hang forever. timeout(1) is optional: without it
+# the consumer still ends via --max-messages / --timeout-ms.
+run_step() {
+  local rc=0
+  if [[ -n "$TIMEOUT_BIN" ]]; then
+    set +e
+    "$TIMEOUT_BIN" -k 10 "$KAFKA_STEP_TIMEOUT" "$@"
+    rc=$?
+    set -e
+  else
+    set +e
+    "$@"
+    rc=$?
+    set -e
+  fi
+  return "$rc"
 }
 
 resolve_kafka_host() {
@@ -113,19 +145,57 @@ PAYLOAD=$'1\n2\n3\n4\n4\n5\n'
 MSG_COUNT=6
 
 echo "---- kafka-console-producer (${MSG_COUNT} lines) ----"
-printf '%s' "$PAYLOAD" | "$producer" \
+printf '%s' "$PAYLOAD" | run_step "$producer" \
   --topic "$KAFKA_TOPIC" \
   --bootstrap-server "$bootstrap" \
-  --producer.config "$KAFKA_CLIENT_CONFIG"
+  --producer.config "$KAFKA_CLIENT_CONFIG" \
+  || die "producer failed or timed out"
 
-echo "---- kafka-console-consumer (--from-beginning, --max-messages ${MSG_COUNT}) ----"
-echo "(If the topic already had data, you will see older messages first; increase KAFKA_MAX_MESSAGES to drain more.)"
+# The console consumer blocks until --max-messages is reached, so asking for
+# more than the topic holds hangs the run. Cap it and bound idle waits.
 KAFKA_MAX_MESSAGES="${KAFKA_MAX_MESSAGES:-$MSG_COUNT}"
-"$consumer" \
+if (( KAFKA_MAX_MESSAGES > MSG_COUNT )); then
+  echo "WARN: KAFKA_MAX_MESSAGES=${KAFKA_MAX_MESSAGES} exceeds produced ${MSG_COUNT}; capping to avoid a blocked consumer"
+  KAFKA_MAX_MESSAGES="$MSG_COUNT"
+fi
+
+echo "---- kafka-console-consumer (--from-beginning, --max-messages ${KAFKA_MAX_MESSAGES}, --timeout-ms ${KAFKA_CONSUMER_TIMEOUT_MS}) ----"
+echo "(If the topic already had data, you will see older messages first.)"
+
+consume_out="$(mktemp 2>/dev/null || echo /tmp/kafka-smoke-consume.out)"
+consume_rc=0
+run_step "$consumer" \
   --topic "$KAFKA_TOPIC" \
   --bootstrap-server "$bootstrap" \
   --consumer.config "$KAFKA_CLIENT_CONFIG" \
   --from-beginning \
-  --max-messages "$KAFKA_MAX_MESSAGES"
+  --max-messages "$KAFKA_MAX_MESSAGES" \
+  --timeout-ms "$KAFKA_CONSUMER_TIMEOUT_MS" >"$consume_out" 2>&1 || consume_rc=$?
+cat "$consume_out"
 
-echo "OK: Kafka sample producer/consumer finished."
+got="$(grep -c -E '^[0-9]+$' "$consume_out" 2>/dev/null || true)"
+got="${got:-0}"
+rm -f "$consume_out" 2>/dev/null || true
+
+echo ""
+echo "==== Kafka smoke report ===="
+echo "bootstrap: ${bootstrap}"
+echo "topic:     ${KAFKA_TOPIC}"
+echo "produced:  ${MSG_COUNT}"
+echo "consumed:  ${got}/${KAFKA_MAX_MESSAGES} (consumer rc=${consume_rc})"
+
+if (( got >= KAFKA_MAX_MESSAGES )); then
+  echo "result:    PASS"
+  echo "==========================="
+  echo "OK: Kafka sample producer/consumer finished."
+  exit 0
+fi
+
+echo "result:    FAIL"
+echo "==========================="
+if (( consume_rc == 124 )); then
+  echo "FAIL: consumer hard timeout after ${KAFKA_STEP_TIMEOUT}s; consumed ${got}/${KAFKA_MAX_MESSAGES}."
+else
+  echo "FAIL: consumed only ${got}/${KAFKA_MAX_MESSAGES} message(s) (rc=${consume_rc})."
+fi
+exit 1

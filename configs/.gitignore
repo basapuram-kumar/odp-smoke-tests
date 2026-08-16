@@ -1,2 +1,5 @@
 # Optional local override (legacy filename still accepted by Ambari scripts).
 ambari.config
+
+# Local Ranger Admin password — never commit. Copy from ranger.env.example.
+ranger.env

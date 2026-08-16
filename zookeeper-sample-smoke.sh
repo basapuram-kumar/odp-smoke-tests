@@ -707,7 +707,8 @@ if (( cli_possible == 1 )); then
 
     zk_cli delete "$ZOOKEEPER_ZNODE" >/dev/null
     got="$(zk_cli get "$ZOOKEEPER_ZNODE" || true)"
-    if printf '%s' "$got" | grep -q 'NoNodeException'; then
+    # Kerberized zkCli often prints "Node does not exist: ..." instead of NoNodeException
+    if printf '%s' "$got" | grep -Eqi 'NoNodeException|Node does not exist'; then
       echo "        delete -> NoNode on re-read"
       record_pass "znode delete"
       znode_created=0

@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 #
-# Smoke: Apache Hue UI - liveness, login page, form login, and authenticated APIs.
+# Smoke: Apache Hue setup-ready checks, UI accessibility, form login, APIs.
 #
 # Steps:
+#   0) Optional setups/setup-hue.sh (HUE_RUN_SETUP=1): MySQL metastore, keytab,
+#      migrate, Ambari START
 #   1) Ambari discovery of HUE_SERVER host, http_port, ssl_enable, auth backend
-#   2) Unauthenticated: /desktop/debug/is_alive, / (redirect to login), login page + CSRF
-#   3) Form login (Django CSRF + session cookies)
-#   4) Authenticated: /desktop/api2/get_config, /useradmin/api/get_users,
-#      /notebook/api/get_history
+#   2) Ambari HUE service STARTED
+#   3) Unauthenticated: /desktop/debug/is_alive, / (redirect to login),
+#      login page + CSRF, static CSS linked from login page
+#   4) Form login (Django CSRF + session cookies)
+#   5) Authenticated: /hue/about/, /desktop/api2/get_config,
+#      /useradmin/api/get_users, /notebook/api/get_history
 #
 # Environment (optional):
 #   AMBARI_CONFIG_FILE, AMBARI_BASE_URL, AMBARI_USER, AMBARI_PASSWORD, CLUSTER_NAME
@@ -16,13 +20,15 @@
 #   HUE_HOST              used with HUE_PORT / HUE_SSL if URL unset
 #   HUE_PORT              default Ambari hue-env http_port, else 8888
 #   HUE_SSL               default Ambari hue-desktop-site ssl_enable, else 0
-#   HUE_USER              default hue
-#   HUE_PASSWORD          default hue (AllowFirstUserDjangoBackend / ModelBackend)
+#   HUE_USER              default admin
+#   HUE_PASSWORD          default admin (AllowFirstUserDjangoBackend / ModelBackend)
 #   HUE_SKIP_AUTH         default 0 - set 1 for is_alive + login-page only
+#   HUE_RUN_SETUP         default 0 - set 1 to run setups/setup-hue.sh first
 #   CURL_EXTRA_OPTS       e.g. -k when ssl_enable is true with a self-signed cert
 #
 # Usage:
 #   ./hue-sample-smoke.sh
+#   HUE_RUN_SETUP=1 SSH_KEY=$HOME/Downloads/usdc.pem ./hue-sample-smoke.sh
 #   HUE_SKIP_AUTH=1 ./hue-sample-smoke.sh
 #
 set -euo pipefail
@@ -116,13 +122,20 @@ _cfg_AMBARI_BASE_URL=""
 _cfg_AMBARI_USER=""
 _cfg_AMBARI_PASSWORD=""
 
-load_env_file "$HUE_ENV_FILE" 'HUE_*|CURL_EXTRA_OPTS'
+load_env_file "$HUE_ENV_FILE" 'HUE_*|SSH_*|CURL_EXTRA_OPTS'
 HUE_SKIP_AUTH="${HUE_SKIP_AUTH:-0}"
-HUE_USER="${HUE_USER:-hue}"
-HUE_PASSWORD="${HUE_PASSWORD:-hue}"
+HUE_RUN_SETUP="${HUE_RUN_SETUP:-0}"
+HUE_USER="${HUE_USER:-admin}"
+HUE_PASSWORD="${HUE_PASSWORD:-admin}"
 HUE_PORT="${HUE_PORT:-}"
 HUE_SSL="${HUE_SSL:-}"
 CURL_EXTRA_OPTS="${CURL_EXTRA_OPTS:-}"
+
+if [[ "$HUE_RUN_SETUP" == "1" ]]; then
+  echo "---- Hue setup (HUE_RUN_SETUP=1) ----"
+  # shellcheck disable=SC1091
+  "${SCRIPT_DIR}/setups/setup-hue.sh" || die "setups/setup-hue.sh failed"
+fi
 
 cluster="${CLUSTER_NAME:-}"
 if [[ -f "$AMBARI_CONFIG_FILE" ]]; then
@@ -261,6 +274,20 @@ echo "    user: ${HUE_USER}"
 [[ -n "$cluster" ]] && echo "    cluster: $cluster"
 [[ -n "$auth_backend" ]] && echo "    auth backend: $auth_backend"
 
+# Ambari service state when credentials/cluster are available.
+if [[ -n "$cluster" && -n "${AMBARI_USER:-}" && -n "${AMBARI_PASSWORD:-}" ]]; then
+  hue_svc_state="$(ambari_get "${AMBARI_BASE_URL%/}/api/v1/clusters/${cluster}/services/HUE?fields=ServiceInfo/state" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("ServiceInfo",{}).get("state",""))' 2>/dev/null || true)"
+  echo "    Ambari HUE state: ${hue_svc_state:-?}"
+  if [[ "$hue_svc_state" == "STARTED" ]]; then
+    record_pass "Ambari HUE STARTED"
+  elif [[ -n "$hue_svc_state" ]]; then
+    record_fail "Ambari HUE state=${hue_svc_state} (expected STARTED)"
+  else
+    record_skip "Ambari HUE state (could not read)"
+  fi
+fi
+
 # curl helpers: set resp_body / resp_code. Do not use a variable named "path"
 # (zsh ties path <-> PATH).
 resp_body=""
@@ -324,8 +351,27 @@ else
   record_fail "login page (HTTP ${resp_code}, csrf_len=${#csrf})"
 fi
 
+# Static CSS linked from the login page (UI accessibility).
+css_path="$(printf '%s' "$resp_body" | python3 -c "
+import re, sys
+html = sys.stdin.read()
+m = re.search(r'href=[\"\\'](/static/[^\"\\']+\\.css)[\"\\']', html)
+print(m.group(1) if m else '')
+")"
+if [[ -n "$css_path" ]]; then
+  hue_get "$css_path"
+  if [[ "$resp_code" == "200" && ${#resp_body} -gt 500 ]]; then
+    record_pass "static CSS (${css_path}, bytes=${#resp_body})"
+  else
+    record_fail "static CSS ${css_path} (HTTP ${resp_code}, bytes=${#resp_body})"
+  fi
+else
+  record_skip "static CSS (no link on login page)"
+fi
+
 if [[ "$HUE_SKIP_AUTH" == "1" ]]; then
   record_skip "form login (HUE_SKIP_AUTH=1)"
+  record_skip "hue/about (HUE_SKIP_AUTH=1)"
   record_skip "api2/get_config (HUE_SKIP_AUTH=1)"
   record_skip "useradmin get_users (HUE_SKIP_AUTH=1)"
   record_skip "notebook get_history (HUE_SKIP_AUTH=1)"
@@ -355,13 +401,24 @@ else
       curl -sS ${CURL_EXTRA_OPTS:-} -b "$COOKIE_JAR" -c "$COOKIE_JAR" -L \
         -o /dev/null --max-redirs 5 "${hue_base}/" >/dev/null 2>&1 || true
     elif [[ "$login_code" == "200" ]]; then
-      record_fail "form login (HTTP 200 - check HUE_USER / HUE_PASSWORD)"
+      # Some Hue builds land on /hue with 200 after successful login.
+      if printf '%s' "$raw" | grep -qiE 'Welcome to Hue|/hue/|logout'; then
+        record_pass "form login (HTTP 200 app shell)"
+      else
+        record_fail "form login (HTTP 200 - check HUE_USER / HUE_PASSWORD)"
+      fi
     else
       record_fail "form login (HTTP ${login_code})"
     fi
   fi
 
-  echo "---- authenticated APIs ----"
+  echo "---- authenticated UI + APIs ----"
+  hue_get "/hue/about/"
+  if [[ "$resp_code" == "200" && ${#resp_body} -gt 1000 ]]; then
+    record_pass "hue/about (bytes=${#resp_body})"
+  else
+    record_fail "hue/about (HTTP ${resp_code}, bytes=${#resp_body})"
+  fi
   hue_get "/desktop/api2/get_config"
   if [[ "$resp_code" == "200" ]]; then
     apps="$(printf '%s' "$resp_body" | python3 -c "

@@ -220,6 +220,16 @@ CACERTS="$(find_cacerts)" || die "cacerts not found (tried /etc/pki/java/cacerts
 info "Using cacerts=${CACERTS}"
 [[ "$(id -u)" -eq 0 ]] || die "run as root (needed for truststore + ranger restart)"
 
+# Ambari sometimes leaves ranger-admin-keystore.jks as a symlink to system
+# cacerts. Never write through that symlink - replace it with a real copy.
+if [[ -L "$TS" ]]; then
+  info "Removing symlink $TS -> $(readlink "$TS" || true)"
+  rm -f "$TS"
+elif [[ -e "$TS" ]]; then
+  info "Backing up existing truststore to ${TS}.bak.$$"
+  cp -a "$TS" "${TS}.bak.$$" || true
+fi
+
 info "Creating truststore from cacerts"
 cp -a "$CACERTS" "$TS"
 chown ranger:ranger "$TS"

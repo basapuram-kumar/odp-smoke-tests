@@ -234,10 +234,12 @@ def req(method, url, data=None):
         err = e.read().decode(errors="replace")
         raise SystemExit(f"[ERROR] Ambari {method} {url} -> HTTP {e.code}: {err}") from e
 
-def get_config(qc, config_type):
+def get_config(qc, config_type, required=True):
     desired = req("GET", f"{ambari}/api/v1/clusters/{qc}?fields=Clusters/desired_configs")
     dc = (desired.get("Clusters") or {}).get("desired_configs") or {}
     if config_type not in dc:
+        if not required:
+            return None, {}, None
         raise SystemExit(f"[ERROR] desired_configs has no type '{config_type}'")
     old_tag = dc[config_type]["tag"]
     cfg = req(
@@ -247,6 +249,8 @@ def get_config(qc, config_type):
     )
     items = cfg.get("items") or []
     if not items:
+        if not required:
+            return None, {}, None
         raise SystemExit(f"[ERROR] no configuration items for {config_type} tag={old_tag}")
     props = dict(items[0].get("properties") or {})
     attrs = items[0].get("properties_attributes")
@@ -448,7 +452,10 @@ else:
 # 3) tez-site: Tez AM container size and matching heap
 # ---------------------------------------------------------------------------
 if not skip_tez:
-    if update_sizing(
+    tez_tag, _, _ = get_config(qc, "tez-site", required=False)
+    if tez_tag is None:
+        print("[INFO] tez-site not present on this cluster; skipping Tez AM sizing")
+    elif update_sizing(
         "tez-site", "tez.am.resource.memory.mb", "tez.am.java.opts",
         "Tez AM", tez_am_mb_override, tez_am_opts_override,
     ):

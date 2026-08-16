@@ -1,19 +1,24 @@
 #!/usr/bin/env bash
-# JupyterHub pre-reqs for RHEL 8 / 9 (and Rocky / Alma / Oracle Linux)
-# ODP *-2 line (Python 3.8 + Node.js 20)
+# JupyterHub OS pre-reqs for RHEL 8 / 9 (Rocky / Alma / Oracle Linux)
 #
-# Docs:
-#   https://docs.acceldata.io/odp/odp-3.2.3.5-2/documentation/jupyter-prerequisites
+# Docs (ODP 3.3.x / current):
+#   https://docs.acceldata.io/odp/documentation/jupyter-prerequisites
 #
-# Matches ansible-rhel8/playbooks/roles/pre-reqs/tasks/jupyterhub.yml (*-2):
-#   dnf install python38-devel
-#   dnf groupinstall "Development Tools"
+# Matches ansible-rhel8/playbooks/roles/pre-reqs/tasks/jupyterhub.yml
+# for the *-1 / *-3 release line (Python 3.11 + Node.js 20):
+#   dnf install python3.11-devel
 #   dnf module reset nodejs && enable nodejs:20 && install nodejs
 #   npm install -g configurable-http-proxy
+#
+# For ODP *-2 (Python 3.8) set:
+#   ODP_JHUB_PYTHON=3.8 sudo -E ./prereqs/install-jupyterhub-prereqs-rhel8.sh
 #
 # Idempotent. Run as root on the JupyterHub host:
 #   sudo ./prereqs/install-jupyterhub-prereqs-rhel8.sh
 set -euo pipefail
+
+# Default to Python 3.11 per current docs; override with ODP_JHUB_PYTHON=3.8 for *-2.
+ODP_JHUB_PYTHON="${ODP_JHUB_PYTHON:-3.11}"
 
 log() { echo "[INFO] $*"; }
 warn() { echo "[WARN] $*"; }
@@ -39,54 +44,58 @@ case "${OS_MAJOR}" in
   *) warn "Expected RHEL/Rocky/Alma 8 or 9; continuing on ${ID} ${VERSION_ID:-unknown}." ;;
 esac
 
-if ! command -v dnf >/dev/null 2>&1; then
-  die "dnf not found; this script requires RHEL 8+ with dnf."
+command -v dnf >/dev/null 2>&1 || die "dnf not found; this script requires RHEL 8+ with dnf."
+
+case "${ODP_JHUB_PYTHON}" in
+  3.11)
+    PY_DEVEL_PKGS=(python3.11-devel)
+    PY_BIN="python3.11"
+    ;;
+  3.8)
+    PY_DEVEL_PKGS=(python38-devel python3.8-devel)
+    PY_BIN="python3.8"
+    ;;
+  *)
+    die "Unsupported ODP_JHUB_PYTHON=${ODP_JHUB_PYTHON} (use 3.11 or 3.8)."
+    ;;
+esac
+
+log "Installing ${PY_DEVEL_PKGS[0]} (ODP_JHUB_PYTHON=${ODP_JHUB_PYTHON})..."
+installed=0
+for pkg in "${PY_DEVEL_PKGS[@]}"; do
+  if dnf install -y "${pkg}"; then
+    installed=1
+    break
+  fi
+done
+[[ "${installed}" -eq 1 ]] || die "Failed to install Python devel package(s): ${PY_DEVEL_PKGS[*]}"
+
+if ! command -v "${PY_BIN}" >/dev/null 2>&1; then
+  log "Installing ${PY_BIN} interpreter..."
+  dnf install -y "${PY_BIN}" || true
 fi
-
-if command -v yum >/dev/null 2>&1; then
-  YUM="yum"
-else
-  YUM="dnf"
-fi
-
-log "Installing python38-devel..."
-# AppStream package name is typically python38-devel on RHEL 8/9.
-dnf install -y python38-devel || dnf install -y python3.8-devel
-
-# Ensure the python3.8 interpreter is present (devel sometimes assumes it).
-if ! command -v python3.8 >/dev/null 2>&1; then
-  log "Installing python3.8 interpreter..."
-  dnf module enable python3.8 -y 2>/dev/null || true
-  dnf install -y python3.8 || true
-fi
-
-log "Installing Development Tools group..."
-"${YUM}" -y groupinstall "Development Tools" || dnf -y group install "Development Tools"
 
 log "Resetting and enabling Node.js 20 module stream..."
-# Docs install a default nodejs first, then reset to 20. Prefer enabling 20
-# directly so the final node/npm versions match Node.js 20.
 dnf module reset nodejs -y || true
 dnf module enable nodejs:20 -y
 
 log "Installing Node.js 20 (includes npm)..."
 dnf install -y nodejs
-# Some images ship npm as a separate package; ensure it is present.
-"${YUM}" install -y npm 2>/dev/null || dnf install -y npm 2>/dev/null || true
+dnf install -y npm 2>/dev/null || true
 
 command -v node >/dev/null || die "node not found after install."
 command -v npm >/dev/null || die "npm not found after install."
 
 NODE_MAJOR="$(node --version | sed -E 's/^v([0-9]+).*/\1/')"
-[[ "${NODE_MAJOR}" == "20" ]] || warn "Expected Node.js 20.x; got $(node --version)."
+[[ "${NODE_MAJOR}" -ge 20 ]] || die "Node.js 20+ required; got $(node --version)."
+[[ "${NODE_MAJOR}" == "20" ]] || warn "Docs recommend Node.js 20.x; got $(node --version)."
 
-log "Installing configurable-http-proxy..."
+log "Installing configurable-http-proxy globally..."
 npm install -g configurable-http-proxy
 
-# Symlinks Ambari / Ansible often expect under /usr/local/bin
-if [[ -x /usr/bin/python3.8 ]] && [[ ! -e /usr/local/bin/python3.8 ]]; then
-  ln -sf /usr/bin/python3.8 /usr/local/bin/python3.8
-  log "Created symlink /usr/local/bin/python3.8"
+if [[ -x "/usr/bin/${PY_BIN}" ]] && [[ ! -e "/usr/local/bin/${PY_BIN}" ]]; then
+  ln -sf "/usr/bin/${PY_BIN}" "/usr/local/bin/${PY_BIN}"
+  log "Created symlink /usr/local/bin/${PY_BIN}"
 fi
 
 if [[ -x /usr/bin/configurable-http-proxy ]] && [[ ! -e /usr/local/bin/configurable-http-proxy ]]; then
@@ -96,15 +105,17 @@ elif command -v configurable-http-proxy >/dev/null && [[ ! -e /usr/local/bin/con
   ln -sf "${CHP_PATH}" /usr/local/bin/configurable-http-proxy
 fi
 
+[[ -x /usr/local/bin/configurable-http-proxy ]] \
+  || die "configurable-http-proxy missing under /usr/local/bin (Ambari expects this path)."
+
 log "Verification"
 echo "----"
-python3.8 --version 2>/dev/null || warn "python3.8 not on PATH"
+"${PY_BIN}" --version 2>/dev/null || warn "${PY_BIN} not on PATH"
 node --version
 npm --version
 configurable-http-proxy --version || true
-rpm -q python38-devel 2>/dev/null || rpm -q python3.8-devel 2>/dev/null || true
-ls -l /usr/bin/python3.8 /usr/local/bin/python3.8 /usr/local/bin/configurable-http-proxy 2>/dev/null || true
+ls -l "/usr/bin/${PY_BIN}" "/usr/local/bin/${PY_BIN}" /usr/local/bin/configurable-http-proxy 2>/dev/null || true
 echo "----"
 log "JupyterHub RHEL pre-reqs installed successfully."
-log "Ref: https://docs.acceldata.io/odp/odp-3.2.3.5-2/documentation/jupyter-prerequisites"
+log "Ref: https://docs.acceldata.io/odp/documentation/jupyter-prerequisites"
 log "Next: install/start JupyterHub via Ambari, then run ../jupyterhub-sample-smoke.sh"

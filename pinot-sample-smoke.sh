@@ -9,6 +9,7 @@
 #   4) Create schema + OFFLINE table, then read both back
 #   5) Broker SQL against the new table (proves routing; empty table is fine)
 #   6) Ingest 3 JSON rows via /ingestFromFile, then Broker SQL COUNT(*)
+#      (poll until count matches PINOT_EXPECTED_COUNT; early 0 is not success)
 #   7) DROP table + schema (unless PINOT_KEEP_TABLE=1)
 #
 # /ingestFromFile needs a writable controller.local.temp.dir on the controller.
@@ -709,13 +710,19 @@ if (( ingest_ok == 1 )); then
   echo "---- broker SQL COUNT(*) FROM ${PINOT_TABLE} ----"
   deadline=$(( $(date +%s) + PINOT_TIMEOUT_SECONDS ))
   count=""
+  # Broker can answer COUNT(*)=0 before the new segment is ONLINE/queryable.
+  # Only treat a match to PINOT_EXPECTED_COUNT as success; keep polling otherwise.
   while true; do
-    if broker_query "SELECT COUNT(*) AS c FROM ${PINOT_TABLE}" && [[ -n "$query_count" ]]; then
-      count="$query_count"
-      echo "    count=$count"
-      break
+    if broker_query "SELECT COUNT(*) AS c FROM ${PINOT_TABLE}"; then
+      count="${query_count}"
+      if [[ -n "$count" && "$count" == "$PINOT_EXPECTED_COUNT" ]]; then
+        echo "    count=$count"
+        break
+      fi
+      echo "    waiting for row count: got=${count:-<empty>} expected=${PINOT_EXPECTED_COUNT}"
+    else
+      echo "    waiting for segments to become queryable... ${query_error}"
     fi
-    echo "    waiting for segments to become queryable... ${query_error}"
     if (( $(date +%s) >= deadline )); then
       break
     fi

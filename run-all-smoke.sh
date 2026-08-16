@@ -97,6 +97,8 @@ SMOKE_TESTS=(
   nifi-sample-smoke.sh
   nifi-registry-sample-smoke.sh
   jupyterhub-sample-smoke.sh
+  httpfs-sample-smoke.sh
+  trino-sample-smoke.sh
   hue-sample-smoke.sh
   knox-sample-smoke.sh
   infra-solr-sample-smoke.sh
@@ -171,9 +173,15 @@ parse_metric() {
   printf '%s\n' "$line" | sed -nE "s/.*${name}=([0-9]+).*/\\1/p"
 }
 
+SCRIPT_INDEX=0
+SCRIPT_TOTAL="${#SELECTED_TESTS[@]}"
+
 for script in "${SELECTED_TESTS[@]}"; do
+  SCRIPT_INDEX=$((SCRIPT_INDEX + 1))
+  STEP="(${SCRIPT_INDEX}/${SCRIPT_TOTAL})"
   echo ""
-  echo "==== ${script} ===="
+  echo "==== ${STEP} ${script} ===="
+  echo "[INFO] ${STEP} ${script}: running ..."
 
   log_file="${REPORT_DIR}/${script}.log"
   child_start="$(date +%s)"
@@ -238,8 +246,10 @@ for script in "${SELECTED_TESTS[@]}"; do
 
   if (( rc == 0 )); then
     script_ok=$((script_ok + 1))
+    echo "[PASS] ${STEP} ${script} (checks PASS=${display_pass} FAIL=${display_fail}, ${seconds}s)"
   else
     script_fail=$((script_fail + 1))
+    echo "[FAIL] ${STEP} ${script} exit=${rc} (checks PASS=${display_pass} FAIL=${display_fail}, ${seconds}s)"
     if [[ "$SMOKE_CONTINUE" == "0" ]]; then
       echo "WARN: stopping after ${script} because SMOKE_CONTINUE=0"
       break
