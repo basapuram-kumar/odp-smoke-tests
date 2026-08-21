@@ -256,18 +256,72 @@ if [[ "$TRINO_SKIP_PACKAGE" != "1" ]]; then
       rid="$(printf '%s' "$out" | python3 -c 'import sys,json; print((json.load(sys.stdin).get("Requests") or {}).get("id") or "")')"
       ambari_poll "$rid" "INSTALL ${host}/${comp}"
     fi
-    echo "[INFO] ensure Trino RPM on ${host} (${ip})"
+    echo "[INFO] ensure Trino package on ${host} (${ip})"
     "${ssh_base[@]}" "${SSH_USER}@${ip}" 'bash -s' <<'REMOTE'
 set -euo pipefail
-if rpm -qa 2>/dev/null | grep -q '^trino_'; then
-  echo "[OK] trino rpm already installed"
+
+if command -v rpm >/dev/null 2>&1; then
+  if rpm -qa 2>/dev/null | grep -q '^trino_'; then
+    echo "[OK] Trino RPM already installed"
+    exit 0
+  fi
+
+  if command -v dnf >/dev/null 2>&1; then
+    PM=dnf
+  elif command -v yum >/dev/null 2>&1; then
+    PM=yum
+  else
+    echo "[FAIL] RPM host has neither dnf nor yum"
+    exit 2
+  fi
+
+  PKG="$("$PM" -q list available 'trino_*' 2>/dev/null \
+    | awk '/^trino_[0-9]/{sub(/\.[^.]+$/, "", $1); print $1; exit}' || true)"
+  if [[ -z "$PKG" ]]; then
+    PKG="$("$PM" -q search 'trino_' 2>/dev/null \
+      | awk '/^trino_[0-9]/{sub(/\.[^.]+$/, "", $1); print $1; exit}' || true)"
+  fi
+  [[ -n "$PKG" ]] || {
+    echo "[FAIL] no trino_ package available from $PM repositories"
+    exit 2
+  }
+  echo "[INFO] $PM install $PKG"
+  sudo "$PM" install -y "$PKG"
+  rpm -q "$PKG"
   exit 0
 fi
-PKG="$(yum search trino_ 2>/dev/null | awk "/^trino_[0-9].*x86_64/{print \$1}" | head -1 || true)"
-[[ -n "$PKG" ]] || { echo "[FAIL] no trino_ package in yum"; exit 2; }
-echo "[INFO] yum install $PKG"
-sudo yum install -y "$PKG"
-rpm -qa | grep '^trino_'
+
+if command -v dpkg-query >/dev/null 2>&1; then
+  if dpkg-query -W -f='${binary:Package}\t${db:Status-Abbrev}\n' 2>/dev/null \
+      | awk '$2 ~ /^ii/ && $1 ~ /^trino-[0-9]/ {found=1} END {exit !found}'; then
+    echo "[OK] Trino DEB already installed"
+    exit 0
+  fi
+
+  command -v apt-get >/dev/null 2>&1 || {
+    echo "[FAIL] DEB host has no apt-get"
+    exit 2
+  }
+  PKG="$(apt-cache pkgnames 2>/dev/null \
+    | awk '/^trino-[0-9]/{print; exit}' || true)"
+  if [[ -z "$PKG" ]]; then
+    echo "[INFO] refreshing APT package metadata"
+    sudo apt-get update
+    PKG="$(apt-cache pkgnames 2>/dev/null \
+      | awk '/^trino-[0-9]/{print; exit}' || true)"
+  fi
+  [[ -n "$PKG" ]] || {
+    echo "[FAIL] no trino-<stack-version> package available from APT repositories"
+    exit 2
+  }
+  echo "[INFO] apt-get install $PKG"
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "$PKG"
+  dpkg-query -W -f='${binary:Package} ${Version} ${db:Status-Abbrev}\n' "$PKG"
+  exit 0
+fi
+
+echo "[FAIL] unsupported package system: expected RPM or DEB tools"
+exit 2
 REMOTE
   done
 fi
@@ -276,12 +330,19 @@ if [[ "$TRINO_SKIP_KEYTAB" != "1" && "$DISC_SECURITY" == "true" ]]; then
   KDC_IP=""
   for row in "${HOST_ROWS[@]}"; do
     IFS='|' read -r role comp host state ip <<<"$row"
-    if "${ssh_base[@]}" "${SSH_USER}@${ip}" 'command -v kadmin.local >/dev/null && sudo systemctl is-active krb5kdc >/dev/null 2>&1'; then
+    if "${ssh_base[@]}" "${SSH_USER}@${ip}" 'bash -s' <<'REMOTE_KDC'
+set -euo pipefail
+command -v kadmin.local >/dev/null 2>&1
+systemctl is-active --quiet krb5kdc 2>/dev/null \
+  || systemctl is-active --quiet krb5-kdc 2>/dev/null
+REMOTE_KDC
+    then
       KDC_IP="$ip"
       break
     fi
   done
-  [[ -n "$KDC_IP" ]] || die "No host with kadmin.local/krb5kdc found; set keytabs manually or run on KDC"
+  [[ -n "$KDC_IP" ]] || die \
+    "No host with kadmin.local and active krb5kdc/krb5-kdc found; set keytabs manually or run on KDC"
 
   echo "[INFO] using KDC host ${KDC_IP} for trino keytabs"
   TMPDIR_LOCAL="$(mktemp -d)"
@@ -293,9 +354,9 @@ if [[ "$TRINO_SKIP_KEYTAB" != "1" && "$DISC_SECURITY" == "true" ]]; then
     IFS='|' read -r role comp host state ip <<<"$row"
     SHORTS+=("${host%%.*}")
   done
-  mapfile -t SHORTS < <(printf '%s\n' "${SHORTS[@]}" | awk '!a[$0]++')
-
-  SHORTS_STR="$(printf '%s ' "${SHORTS[@]}")"
+  # Deduplicate short hostnames. Avoid mapfile (Bash 4+); macOS ships Bash 3.2.
+  SHORTS_STR="$(printf '%s\n' "${SHORTS[@]}" | awk '!a[$0]++' | tr '\n' ' ')"
+  SHORTS_STR="${SHORTS_STR% }"
   "${ssh_base[@]}" "${SSH_USER}@${KDC_IP}" "bash -s" <<REMOTE
 set -euo pipefail
 REALM='${REALM}'

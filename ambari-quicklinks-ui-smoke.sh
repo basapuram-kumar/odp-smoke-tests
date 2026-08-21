@@ -20,8 +20,9 @@
 #   AMBARI_CONFIG_FILE, AMBARI_BASE_URL, AMBARI_USER, AMBARI_PASSWORD, CLUSTER_NAME
 #   UI_SERVICES          comma/space list to include (e.g. HDFS,YARN,RANGER)
 #   UI_SKIP_SERVICES     comma/space list to exclude
-#   UI_LINK_MODE         ui (default) | all
-#                        ui keeps main web consoles; all includes logs/jmx/stacks
+#   UI_LINK_MODE         all (default) | ui
+#                        all probes every Quick Link (UIs, logs, jmx, stacks);
+#                        ui keeps only the main web consoles
 #   UI_USE_IP            1 (default) rewrite hostnames to Ambari host IPs
 #   UI_ACCEPT_AUTH       1 (default) treat HTTP 401/403 as reachable (PASS)
 #   UI_CONNECT_TIMEOUT   curl --connect-timeout seconds (default 5)
@@ -35,7 +36,7 @@
 # Usage:
 #   ./ambari-quicklinks-ui-smoke.sh
 #   UI_SERVICES=HDFS,YARN,RANGER ./ambari-quicklinks-ui-smoke.sh
-#   UI_LINK_MODE=all ./ambari-quicklinks-ui-smoke.sh
+#   UI_LINK_MODE=ui ./ambari-quicklinks-ui-smoke.sh
 #
 # Ambari URL/user/password are read from configs/ambari.env or configs/ambari.config
 # (or AMBARI_CONFIG_FILE). Shell exports still override the file.
@@ -182,7 +183,7 @@ CLUSTER_NAME="${CLUSTER_NAME:-${_cfg_CLUSTER_NAME:-}}"
 
 UI_SERVICES="${UI_SERVICES:-}"
 UI_SKIP_SERVICES="${UI_SKIP_SERVICES:-}"
-UI_LINK_MODE="${UI_LINK_MODE:-ui}"
+UI_LINK_MODE="${UI_LINK_MODE:-all}"
 UI_USE_IP="${UI_USE_IP:-1}"
 UI_ACCEPT_AUTH="${UI_ACCEPT_AUTH:-1}"
 UI_CONNECT_TIMEOUT="${UI_CONNECT_TIMEOUT:-5}"
@@ -231,7 +232,7 @@ password = os.environ["AMBARI_PASSWORD"]
 cluster = os.environ.get("CLUSTER_NAME") or ""
 services_filter = {s.strip().upper() for s in re.split(r"[, \t]+", os.environ.get("UI_SERVICES") or "") if s.strip()}
 skip_filter = {s.strip().upper() for s in re.split(r"[, \t]+", os.environ.get("UI_SKIP_SERVICES") or "") if s.strip()}
-link_mode = os.environ.get("UI_LINK_MODE") or "ui"
+link_mode = os.environ.get("UI_LINK_MODE") or "all"
 use_ip = os.environ.get("UI_USE_IP") == "1"
 include_not_started = os.environ.get("UI_INCLUDE_NOT_STARTED") == "1"
 

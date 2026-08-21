@@ -118,6 +118,7 @@ script_matches_token() {
     "${base%-pi-sample-smoke}" \
     "${base%-sample-smoke}" \
     "${base%-smoke-test}" \
+    "${base%-ui-smoke}" \
     "${base%-smoke}"; do
     [[ "$token" == "$alias" ]] && return 0
   done
@@ -173,6 +174,28 @@ parse_metric() {
   printf '%s\n' "$line" | sed -nE "s/.*${name}=([0-9]+).*/\\1/p"
 }
 
+# Canonical SMOKE_TESTS names are unprefixed (kafka3-sample-smoke.sh) while
+# the suite files often carry an ordering prefix (10_kafka3-sample-smoke.sh).
+resolve_smoke_script() {
+  local name="$1" exact match
+  exact="${SCRIPT_DIR}/${name}"
+  if [[ -f "$exact" ]]; then
+    printf '%s\n' "$name"
+    return 0
+  fi
+  match="$(
+    # Prefer the lowest numeric / lexical prefix when several match.
+    find "$SCRIPT_DIR" -maxdepth 1 -type f -name "*_${name}" 2>/dev/null \
+      | sort \
+      | head -1
+  )"
+  if [[ -n "$match" && -f "$match" ]]; then
+    printf '%s\n' "${match##*/}"
+    return 0
+  fi
+  return 1
+}
+
 SCRIPT_INDEX=0
 SCRIPT_TOTAL="${#SELECTED_TESTS[@]}"
 
@@ -186,27 +209,33 @@ for script in "${SELECTED_TESTS[@]}"; do
   log_file="${REPORT_DIR}/${script}.log"
   child_start="$(date +%s)"
   rc=0
+  resolved=""
 
-  if [[ ! -f "${SCRIPT_DIR}/${script}" ]]; then
+  if ! resolved="$(resolve_smoke_script "$script")"; then
     echo "ERROR: smoke script not found: ${SCRIPT_DIR}/${script}" | tee "$log_file"
     rc=127
-  elif [[ ! -x "${SCRIPT_DIR}/${script}" ]]; then
-    echo "ERROR: smoke script is not executable: ${SCRIPT_DIR}/${script}" | tee "$log_file"
+  elif [[ ! -x "${SCRIPT_DIR}/${resolved}" ]]; then
+    echo "ERROR: smoke script is not executable: ${SCRIPT_DIR}/${resolved}" | tee "$log_file"
     rc=126
   else
-    command_prefix=()
-    if [[ -n "$SMOKE_TIMEOUT_SECONDS" ]] && command -v timeout >/dev/null 2>&1; then
-      command_prefix=(timeout "$SMOKE_TIMEOUT_SECONDS")
+    if [[ "$resolved" != "$script" ]]; then
+      echo "[INFO] resolved ${script} -> ${resolved}"
     fi
-
     set +e
     # Child stdin is /dev/null so teed runs never inherit a TTY/pipe that an
     # interactive tool (e.g. hbase shell without -n) would wait on. Smoke
     # scripts that need stdin must open their own file/heredoc explicitly.
-    (
-      cd "$SCRIPT_DIR"
-      "${command_prefix[@]}" "./${script}" </dev/null
-    ) 2>&1 | tee "$log_file"
+    if [[ -n "$SMOKE_TIMEOUT_SECONDS" ]] && command -v timeout >/dev/null 2>&1; then
+      (
+        cd "$SCRIPT_DIR"
+        timeout "$SMOKE_TIMEOUT_SECONDS" "./${resolved}" </dev/null
+      ) 2>&1 | tee "$log_file"
+    else
+      (
+        cd "$SCRIPT_DIR"
+        "./${resolved}" </dev/null
+      ) 2>&1 | tee "$log_file"
+    fi
     pipeline_status=("${PIPESTATUS[@]}")
     set -e
     rc="${pipeline_status[0]}"

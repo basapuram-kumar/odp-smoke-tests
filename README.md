@@ -1138,7 +1138,7 @@ KNOX_SKIP_AUTH=0 ./knox-sample-smoke.sh
 Resolves Ambari **Quick Links** for every STARTED service (NameNode UI, ResourceManager UI, Ranger, Hue, Zeppelin, ...) the same way Ambari builds them, then HTTP-probes each URL.
 
 - Discovers cluster name, stack version, host IPs, component placement, and current configs from Ambari.
-- Default `UI_LINK_MODE=ui` keeps main web consoles; set `all` to also probe logs/JMX/thread stacks.
+- Default `UI_LINK_MODE=all` probes every Quick Link (UIs, logs, JMX, thread stacks). Set `ui` to keep only the main web consoles.
 - Default `UI_USE_IP=1` rewrites hostnames to Ambari-reported IPs so clients without cluster DNS still work.
 - On Kerberos clusters, HTTP `401`/`403` still means the UI port is up (`UI_ACCEPT_AUTH=1`).
 - Optional components that are not installed (for example Cruise Control, Grafana) are **SKIPPED**, not failed.

@@ -14,7 +14,7 @@
 #        (MR Map Java Heap Size)
 #
 # 3) Tez / tez-site:
-#      tez.am.resource.memory.mb + tez.am.java.opts
+#      tez.am.resource.memory.mb -> 5120 (Java opts are not changed)
 #    UI: Services > Tez > Configs > General
 #
 # Container sizes and heaps are derived from the cluster's actual NodeManager
@@ -31,7 +31,11 @@
 #
 # Set FORCE_UNSAFE_SIZING=1 to downgrade those refusals to warnings.
 #
-# 4) Ranger YARN policy "all - queue":
+# 4) Ranger KMS / kms-site:
+#      Add users/hosts/groups=* proxyuser properties for each installed service
+#      among HIVE, IMPALA and FLINK.
+#
+# 5) Ranger YARN policy "all - queue":
 #      merge users: hdfs,yarn,hive,spark,flink,pinot,kafka
 #    (calls ./ranger-yarn-all-queue-users-add.sh)
 #
@@ -45,8 +49,7 @@
 #   BANNED_USERS              default mapred,bin
 #   MAPREDUCE_MAP_MEMORY_MB   default derived from NodeManager capacity
 #   MAPREDUCE_MAP_JAVA_OPTS   default derived (80% of the map container)
-#   TEZ_AM_RESOURCE_MEMORY_MB default derived from NodeManager capacity
-#   TEZ_AM_JAVA_OPTS          default derived (80% of the AM container)
+#   TEZ_AM_RESOURCE_MEMORY_MB default 5120
 #   FORCE_UNSAFE_SIZING       if 1, warn instead of refusing unsafe sizes
 #   RANGER_ADD_USERS          default hdfs,yarn,hive,spark,flink,pinot,kafka
 #   RANGER_ENV_FILE           default <script-dir>/configs/ranger.env
@@ -72,13 +75,20 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AMBARI_CONFIG_FILE="${AMBARI_CONFIG_FILE:-${SCRIPT_DIR}/configs/ambari.env}"
 RANGER_ENV_FILE="${RANGER_ENV_FILE:-${RANGER_CONFIG_FILE:-${SCRIPT_DIR}/configs/ranger.env}}"
-RANGER_USERS_SCRIPT="${RANGER_USERS_SCRIPT:-${SCRIPT_DIR}/ranger-yarn-all-queue-users-add.sh}"
+RANGER_USERS_SCRIPT="${RANGER_USERS_SCRIPT:-}"
+if [[ -z "$RANGER_USERS_SCRIPT" ]]; then
+  # The suite carries an ordering prefix (p1_); keep the unprefixed name working.
+  for _c in "${SCRIPT_DIR}/p1_ranger-yarn-all-queue-users-add.sh" \
+            "${SCRIPT_DIR}/ranger-yarn-all-queue-users-add.sh"; do
+    [[ -f "$_c" ]] && { RANGER_USERS_SCRIPT="$_c"; break; }
+  done
+  RANGER_USERS_SCRIPT="${RANGER_USERS_SCRIPT:-${SCRIPT_DIR}/p1_ranger-yarn-all-queue-users-add.sh}"
+fi
 BANNED_USERS="${BANNED_USERS:-mapred,bin}"
 # Empty means "derive from the cluster's NodeManager capacity".
 MAPREDUCE_MAP_MEMORY_MB="${MAPREDUCE_MAP_MEMORY_MB:-}"
 MAPREDUCE_MAP_JAVA_OPTS="${MAPREDUCE_MAP_JAVA_OPTS:-}"
-TEZ_AM_RESOURCE_MEMORY_MB="${TEZ_AM_RESOURCE_MEMORY_MB:-}"
-TEZ_AM_JAVA_OPTS="${TEZ_AM_JAVA_OPTS:-}"
+TEZ_AM_RESOURCE_MEMORY_MB="${TEZ_AM_RESOURCE_MEMORY_MB:-5120}"
 FORCE_UNSAFE_SIZING="${FORCE_UNSAFE_SIZING:-0}"
 # Default matches: ./ranger-yarn-all-queue-users-add.sh hdfs,yarn,hive,spark,flink,pinot,kafka
 RANGER_ADD_USERS="${RANGER_ADD_USERS:-hdfs,yarn,hive,spark,flink,pinot,kafka}"
@@ -179,12 +189,12 @@ log "Cluster: ${CLUSTER_NAME}"
 [[ "${SKIP_MAP_JAVA_OPTS}" == "1" ]] \
   || log "Target map container=${MAPREDUCE_MAP_MEMORY_MB:-derived} heap=${MAPREDUCE_MAP_JAVA_OPTS:-derived}"
 [[ "${SKIP_TEZ_AM_MEMORY}" == "1" ]] \
-  || log "Target Tez AM container=${TEZ_AM_RESOURCE_MEMORY_MB:-derived} heap=${TEZ_AM_JAVA_OPTS:-derived}"
+  || log "Target Tez AM container=${TEZ_AM_RESOURCE_MEMORY_MB} (Java opts unchanged)"
 [[ "${SKIP_RANGER_YARN_USERS}" == "1" ]] || log "Target Ranger YARN all-queue users=${RANGER_ADD_USERS}"
 
 export AMBARI_BASE_URL AMBARI_USER AMBARI_PASSWORD CLUSTER_NAME
 export BANNED_USERS MAPREDUCE_MAP_MEMORY_MB MAPREDUCE_MAP_JAVA_OPTS
-export TEZ_AM_RESOURCE_MEMORY_MB TEZ_AM_JAVA_OPTS FORCE_UNSAFE_SIZING
+export TEZ_AM_RESOURCE_MEMORY_MB FORCE_UNSAFE_SIZING
 export SKIP_BANNED_USERS SKIP_MAP_JAVA_OPTS SKIP_TEZ_AM_MEMORY DRY_RUN
 export CURL_EXTRA_OPTS="${CURL_EXTRA_OPTS:-}"
 
@@ -199,7 +209,6 @@ banned = os.environ["BANNED_USERS"].strip()
 map_mb_override = os.environ.get("MAPREDUCE_MAP_MEMORY_MB", "").strip()
 map_opts_override = os.environ.get("MAPREDUCE_MAP_JAVA_OPTS", "").strip()
 tez_am_mb_override = os.environ.get("TEZ_AM_RESOURCE_MEMORY_MB", "").strip()
-tez_am_opts_override = os.environ.get("TEZ_AM_JAVA_OPTS", "").strip()
 force_unsafe = os.environ.get("FORCE_UNSAFE_SIZING", "0") == "1"
 skip_banned = os.environ.get("SKIP_BANNED_USERS", "0") == "1"
 skip_map = os.environ.get("SKIP_MAP_JAVA_OPTS", "0") == "1"
@@ -353,10 +362,22 @@ def check_heap(label, opts, container_mb):
         )
 
 def apply_heap(opts, container_mb):
-    heap = f"-Xmx{int(container_mb * HEAP_FRACTION)}m"
-    if re.search(r"-Xmx\S+", opts or ""):
-        return re.sub(r"-Xmx\S+", heap, opts, count=1)
-    return f"{opts} {heap}".strip() if opts else heap
+    # Rewrite -Xmx to 80% of the container. If a leftover -Xms is larger than
+    # the new -Xmx the JVM refuses to start, so clamp -Xms down as well.
+    xmx_mb = int(container_mb * HEAP_FRACTION)
+    heap = f"-Xmx{xmx_mb}m"
+    text = opts or ""
+    if re.search(r"-Xmx\S+", text):
+        text = re.sub(r"-Xmx\S+", heap, text, count=1)
+    else:
+        text = f"{text} {heap}".strip()
+    m = re.search(r"-Xms(\d+)([kKmMgG]?)", text)
+    if m:
+        size, unit = int(m.group(1)), m.group(2).lower()
+        xms_mb = {"k": size // 1024, "m": size, "g": size * 1024, "": size // (1024 * 1024)}[unit]
+        if xms_mb > xmx_mb:
+            text = re.sub(r"-Xms\S+", f"-Xms{xmx_mb}m", text, count=1)
+    return text
 
 # ---------------------------------------------------------------------------
 # 1) container-executor: banned.users
@@ -449,19 +470,113 @@ else:
     print("[INFO] SKIP_MAP_JAVA_OPTS=1; skipping mapred-site update")
 
 # ---------------------------------------------------------------------------
-# 3) tez-site: Tez AM container size and matching heap
+# 3) tez-site: Tez AM container size only
 # ---------------------------------------------------------------------------
 if not skip_tez:
-    tez_tag, _, _ = get_config(qc, "tez-site", required=False)
+    tez_tag, tez_props, tez_attrs = get_config(qc, "tez-site", required=False)
     if tez_tag is None:
-        print("[INFO] tez-site not present on this cluster; skipping Tez AM sizing")
-    elif update_sizing(
-        "tez-site", "tez.am.resource.memory.mb", "tez.am.java.opts",
-        "Tez AM", tez_am_mb_override, tez_am_opts_override,
-    ):
-        changed = True
+        print("[INFO] tez-site not present on this cluster; skipping Tez AM memory")
+    elif "tez.am.resource.memory.mb" not in tez_props:
+        print(
+            "[WARN] TEZ skipped: tez-site has no "
+            "tez.am.resource.memory.mb; continuing with other services"
+        )
+    else:
+        target = as_int(tez_am_mb_override, 0)
+        if target <= 0:
+            print(
+                f"[WARN] TEZ skipped: tez.am.resource.memory.mb is not a "
+                f"number: {tez_am_mb_override!r}"
+            )
+        elif target > max_alloc_mb:
+            print(
+                f"[WARN] TEZ skipped: target {target}MB exceeds "
+                f"yarn.scheduler.maximum-allocation-mb={max_alloc_mb}; "
+                "continuing with other services"
+            )
+        elif str(tez_props["tez.am.resource.memory.mb"]).strip() == str(target):
+            print(
+                f"[INFO] tez.am.resource.memory.mb already {target}; "
+                "Java opts unchanged"
+            )
+        else:
+            tez_props["tez.am.resource.memory.mb"] = str(target)
+            put_config(
+                qc,
+                "tez-site",
+                tez_props,
+                tez_attrs,
+                f"Set tez.am.resource.memory.mb={target} (Java opts unchanged)",
+            )
+            changed = True
 else:
     print("[INFO] SKIP_TEZ_AM_MEMORY=1; skipping tez-site update")
+
+# ---------------------------------------------------------------------------
+# 4) Ranger KMS / kms-site: proxyusers for installed query engines
+# ---------------------------------------------------------------------------
+services_json = req(
+    "GET",
+    f"{ambari}/api/v1/clusters/{qc}/services"
+    "?fields=ServiceInfo/service_name,ServiceInfo/state",
+)
+installed = {
+    str((item.get("ServiceInfo") or {}).get("service_name") or "")
+    for item in services_json.get("items") or []
+}
+proxy_services = {
+    "HIVE": "hive",
+    "IMPALA": "impala",
+    "FLINK": "flink",
+}
+needed = {
+    f"hadoop.kms.proxyuser.{proxy}.{suffix}": "*"
+    for service, proxy in proxy_services.items()
+    if service in installed
+    for suffix in ("users", "hosts", "groups")
+}
+if "RANGER_KMS" not in installed:
+    print("[INFO] RANGER_KMS not installed; skipping kms-site proxyusers")
+elif not needed:
+    print(
+        "[INFO] HIVE, IMPALA and FLINK are not installed; "
+        "no kms-site proxyusers required"
+    )
+else:
+    try:
+        kms_tag, kms_props, kms_attrs = get_config(
+            qc, "kms-site", required=False
+        )
+        if kms_tag is None:
+            raise RuntimeError("RANGER_KMS is installed but kms-site is absent")
+        pending = {
+            key: value for key, value in needed.items()
+            if kms_props.get(key) != value
+        }
+        names = ",".join(
+            proxy for service, proxy in proxy_services.items() if service in installed
+        )
+        if not pending:
+            print(f"[INFO] Ranger KMS proxyusers already set for {names}")
+        else:
+            kms_props.update(pending)
+            put_config(
+                qc,
+                "kms-site",
+                kms_props,
+                kms_attrs,
+                f"Add installed-service proxyusers for Ranger KMS ({names})",
+            )
+            print(
+                f"[INFO] Ranger KMS proxyusers added for {names}: "
+                + ",".join(sorted(pending))
+            )
+            changed = True
+    except Exception as exc:
+        print(
+            f"[WARN] RANGER_KMS skipped: kms-site proxyuser update failed: "
+            f"{exc}; continuing"
+        )
 
 if dry_run:
     print("[INFO] DRY_RUN complete; no Ambari changes applied.")
@@ -469,12 +584,13 @@ elif changed:
     print("[INFO] Restart YARN (NodeManagers) for container-executor.cfg.")
     print("[INFO] Restart MapReduce2 / refresh clients for mapred-site as needed.")
     print("[INFO] Restart Tez / refresh Hive clients for tez-site as needed.")
+    print("[INFO] Restart Ranger KMS if kms-site proxyusers changed.")
 else:
     print("[INFO] No Ambari config changes were required.")
 PY
 
 # ---------------------------------------------------------------------------
-# 4) Ranger YARN "all - queue" users
+# 5) Ranger YARN "all - queue" users
 # ---------------------------------------------------------------------------
 if [[ "${SKIP_RANGER_YARN_USERS}" == "1" ]]; then
   log "SKIP_RANGER_YARN_USERS=1; skipping Ranger YARN policy user merge"

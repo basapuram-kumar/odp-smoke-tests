@@ -195,7 +195,7 @@ fi
 discover_ranger_base_url() {
   CURL_EXTRA_OPTS="${CURL_EXTRA_OPTS:-}" \
     AMBARI_USER="$AMBARI_USER" AMBARI_PASSWORD="$AMBARI_PASSWORD" python3 - "$AMBARI_BASE_URL" "$cluster" <<'PY'
-import json, os, shlex, subprocess, sys, urllib.parse
+import json, os, shlex, socket, subprocess, sys, urllib.parse
 from urllib.parse import urlparse
 
 def curl_extra():
@@ -218,41 +218,84 @@ qc = urllib.parse.quote(cluster, safe="")
 url = f"{ambari}/api/v1/clusters/{qc}?fields=Clusters/desired_configs"
 j = curl_json(url)
 dc = (j.get("Clusters") or {}).get("desired_configs") or {}
-ra = dc.get("ranger-admin-site") or {}
-tag = ra.get("tag")
-props = {}
-if tag:
-    u2 = f"{ambari}/api/v1/clusters/{qc}/configurations?type=ranger-admin-site&tag={urllib.parse.quote(tag)}"
-    j2 = curl_json(u2)
-    items = j2.get("items") or []
-    if items:
-        props = items[0].get("properties") or {}
-pm = (props.get("policymgr_external_url") or "").strip()
-if pm:
-    raw = pm if "://" in pm else "http://" + pm
-    p = urlparse(raw)
-    if p.scheme and p.netloc:
-        print(f"{p.scheme}://{p.netloc}".rstrip("/"))
-        sys.exit(0)
-    hostport = pm.split("/")[0]
-    if hostport and ":" in hostport:
-        print(f"http://{hostport}".rstrip("/"))
-        sys.exit(0)
 
-port = (props.get("ranger.service.http.port") or "6080").strip()
-hc_url = f"{ambari}/api/v1/clusters/{qc}/host_components?HostRoles/component_name=RANGER_ADMIN&fields=HostRoles/host_name,HostRoles/public_host_name"
-hj = curl_json(hc_url)
-items = hj.get("items") or []
-host = None
-for it in items:
-    hr = it.get("HostRoles") or {}
-    host = hr.get("public_host_name") or hr.get("host_name")
-    if host:
-        break
+
+def config_props(ctype):
+    tag = (dc.get(ctype) or {}).get("tag")
+    if not tag:
+        return {}
+    u = (
+        f"{ambari}/api/v1/clusters/{qc}/configurations"
+        f"?type={ctype}&tag={urllib.parse.quote(tag)}"
+    )
+    items = curl_json(u).get("items") or []
+    return (items[0].get("properties") or {}) if items else {}
+
+
+props = config_props("ranger-admin-site")
+admin_props = config_props("admin-properties")
+
+scheme, host, port = "", "", ""
+pm = (
+    props.get("policymgr_external_url")
+    or admin_props.get("policymgr_external_url")
+    or ""
+).strip()
+if pm:
+    p = urlparse(pm if "://" in pm else "http://" + pm)
+    if p.hostname:
+        scheme = p.scheme or "http"
+        host = p.hostname
+        port = str(p.port or (6182 if scheme == "https" else 6080))
+
+if not host:
+    scheme = "http"
+    port = (props.get("ranger.service.http.port") or "6080").strip()
+    hc_url = f"{ambari}/api/v1/clusters/{qc}/host_components?HostRoles/component_name=RANGER_ADMIN&fields=HostRoles/host_name,HostRoles/public_host_name"
+    for it in curl_json(hc_url).get("items") or []:
+        hr = it.get("HostRoles") or {}
+        host = hr.get("public_host_name") or hr.get("host_name")
+        if host:
+            break
 if not host:
     sys.stderr.write("No RANGER_ADMIN host in Ambari; set RANGER_BASE_URL\n")
     sys.exit(2)
-print(f"http://{host}:{port}".rstrip("/"))
+
+# Ambari advertises Ranger by hostname. A workstation whose DNS maps that short
+# name to a stale address can reach a different cluster's Ranger and merge users
+# into the wrong policy, so trust the IP Ambari reports for the host instead.
+ip_by_host = {}
+try:
+    hj = curl_json(f"{ambari}/api/v1/clusters/{qc}/hosts?fields=Hosts/host_name,Hosts/ip")
+    for it in hj.get("items") or []:
+        h = it.get("Hosts") or {}
+        if h.get("host_name") and h.get("ip"):
+            ip_by_host[str(h["host_name"])] = str(h["ip"])
+except SystemExit:
+    ip_by_host = {}
+
+ambari_ip = ip_by_host.get(host, "")
+if ambari_ip:
+    try:
+        local_ip = socket.gethostbyname(host)
+    except OSError:
+        local_ip = ""
+    if local_ip != ambari_ip:
+        where = local_ip or "nothing"
+        if scheme == "https":
+            sys.stderr.write(
+                f"WARN {host} resolves to {where} here but Ambari reports "
+                f"{ambari_ip}; keeping the hostname so TLS still validates. Set "
+                "RANGER_BASE_URL if this reaches the wrong cluster.\n"
+            )
+        else:
+            sys.stderr.write(
+                f"WARN {host} resolves to {where} here; using Ambari-reported "
+                f"{ambari_ip} instead so this cannot target another cluster\n"
+            )
+            host = ambari_ip
+
+print(f"{scheme}://{host}:{port}")
 PY
 }
 
